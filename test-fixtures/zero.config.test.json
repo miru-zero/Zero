@@ -1,0 +1,16 @@
+{
+  "providers": {
+    "chatgpt": {
+      "type": "internal"
+    },
+    "fixturemcp": {
+      "type": "mcp-stdio",
+      "command": "test/fixtures/mcp-stdio-server.js",
+      "args": [],
+      "env": {
+        "ZERO_TEST_ROOT_VAR": "{root}/.zero/screenshots"
+      },
+      "timeoutMs": 5000
+    }
+  }
+}

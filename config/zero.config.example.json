@@ -1,0 +1,26 @@
+{
+  "providers": {
+    "chatgpt": {
+      "type": "internal"
+    },
+    "computeruse": {
+      "type": "mcp-stdio",
+      "command": "vendor/Mcp.ComputerUse/Mcp.ComputerUse/bin/Release/net10.0-windows/win-x64/mcp-computeruse.exe",
+      "args": [],
+      "env": {
+        "MCP_COMPUTERUSE_SCREENSHOTS_DIR": "{root}/.zero/screenshots",
+        "DOTNET_ROOT": "{env:LOCALAPPDATA}/Microsoft/dotnet"
+      },
+      "timeoutMs": 60000
+    },
+    "desktopcommander": {
+      "type": "mcp-stdio",
+      "command": "npx",
+      "args": [
+        "-y",
+        "@wonderwhy-er/desktop-commander@0.2.50"
+      ],
+      "timeoutMs": 60000
+    }
+  }
+}

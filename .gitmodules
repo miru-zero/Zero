@@ -1,0 +1,3 @@
+[submodule "vendor/Mcp.ComputerUse"]
+	path = vendor/Mcp.ComputerUse
+	url = https://github.com/tdav/Mcp.ComputerUse.git

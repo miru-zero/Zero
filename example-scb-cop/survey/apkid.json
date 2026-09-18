@@ -1,0 +1,173 @@
+{
+    "apkid_version": "3.1.0",
+    "files": [
+        {
+            "filename": "/home/zhang/Documents/My/obsidian-wiki/lab/apps/scb-cop/source.apk",
+            "matches": {
+                "manipulator": [
+                    "Resources Confusion"
+                ],
+                "protector": [
+                    "Vkey (V-OS App Protection)"
+                ]
+            }
+        },
+        {
+            "filename": "/home/zhang/Documents/My/obsidian-wiki/lab/apps/scb-cop/source.apk!classes.dex",
+            "matches": {
+                "anti_vm": [
+                    "Build.FINGERPRINT check",
+                    "Build.MODEL check",
+                    "Build.MANUFACTURER check",
+                    "Build.PRODUCT check",
+                    "Build.HARDWARE check",
+                    "Build.BOARD check",
+                    "possible Build.SERIAL check",
+                    "network operator name check",
+                    "possible VM check"
+                ],
+                "compiler": [
+                    "unknown (please file detection issue!)"
+                ],
+                "protector": [
+                    "Play Integrity API"
+                ],
+                "yara_issue": [
+                    "yara issue - dex file recognized by apkid but not yara module"
+                ]
+            }
+        },
+        {
+            "filename": "/home/zhang/Documents/My/obsidian-wiki/lab/apps/scb-cop/source.apk!classes2.dex",
+            "matches": {
+                "anti_vm": [
+                    "Build.FINGERPRINT check",
+                    "Build.MANUFACTURER check",
+                    "possible Build.SERIAL check"
+                ],
+                "compiler": [
+                    "unknown (please file detection issue!)"
+                ],
+                "yara_issue": [
+                    "yara issue - dex file recognized by apkid but not yara module"
+                ]
+            }
+        },
+        {
+            "filename": "/home/zhang/Documents/My/obsidian-wiki/lab/apps/scb-cop/source.apk!classes3.dex",
+            "matches": {
+                "anti_debug": [
+                    "Debug.isDebuggerConnected() check"
+                ],
+                "anti_vm": [
+                    "Build.FINGERPRINT check",
+                    "Build.MODEL check",
+                    "Build.MANUFACTURER check",
+                    "Build.PRODUCT check",
+                    "Build.HARDWARE check",
+                    "Build.TAGS check",
+                    "possible VM check"
+                ],
+                "compiler": [
+                    "unknown (please file detection issue!)"
+                ],
+                "protector": [
+                    "Play Integrity API"
+                ],
+                "yara_issue": [
+                    "yara issue - dex file recognized by apkid but not yara module"
+                ]
+            }
+        },
+        {
+            "filename": "/home/zhang/Documents/My/obsidian-wiki/lab/apps/scb-cop/source.apk!classes4.dex",
+            "matches": {
+                "anti_vm": [
+                    "Build.FINGERPRINT check",
+                    "Build.MANUFACTURER check",
+                    "Build.BOARD check",
+                    "possible Build.SERIAL check",
+                    "ro.kernel.qemu check"
+                ],
+                "compiler": [
+                    "unknown (please file detection issue!)"
+                ],
+                "protector": [
+                    "Play Integrity API"
+                ],
+                "yara_issue": [
+                    "yara issue - dex file recognized by apkid but not yara module"
+                ]
+            }
+        },
+        {
+            "filename": "/home/zhang/Documents/My/obsidian-wiki/lab/apps/scb-cop/source.apk!classes5.dex",
+            "matches": {
+                "anti_vm": [
+                    "Build.FINGERPRINT check",
+                    "Build.MANUFACTURER check",
+                    "Build.BOARD check",
+                    "possible Build.SERIAL check",
+                    "network operator name check",
+                    "subscriber ID check",
+                    "possible VM check"
+                ],
+                "compiler": [
+                    "unknown (please file detection issue!)"
+                ],
+                "yara_issue": [
+                    "yara issue - dex file recognized by apkid but not yara module"
+                ]
+            }
+        },
+        {
+            "filename": "/home/zhang/Documents/My/obsidian-wiki/lab/apps/scb-cop/source.apk!lib/arm64-v8a/libe46f.so",
+            "matches": {
+                "obfuscator": [
+                    "DexGuard 9.x"
+                ]
+            }
+        },
+        {
+            "filename": "/home/zhang/Documents/My/obsidian-wiki/lab/apps/scb-cop/source.apk!lib/arm64-v8a/libe598.so",
+            "matches": {
+                "obfuscator": [
+                    "DexGuard 9.x"
+                ]
+            }
+        },
+        {
+            "filename": "/home/zhang/Documents/My/obsidian-wiki/lab/apps/scb-cop/source.apk!lib/arm64-v8a/libvosWrapperEx.so",
+            "matches": {
+                "protector": [
+                    "Vkey (V-OS App Protection)"
+                ]
+            }
+        },
+        {
+            "filename": "/home/zhang/Documents/My/obsidian-wiki/lab/apps/scb-cop/source.apk!lib/armeabi-v7a/libvosWrapperEx.so",
+            "matches": {
+                "protector": [
+                    "Vkey (V-OS App Protection)"
+                ]
+            }
+        },
+        {
+            "filename": "/home/zhang/Documents/My/obsidian-wiki/lab/apps/scb-cop/source.apk!lib/x86/libvosWrapperEx.so",
+            "matches": {
+                "protector": [
+                    "Vkey (V-OS App Protection)"
+                ]
+            }
+        },
+        {
+            "filename": "/home/zhang/Documents/My/obsidian-wiki/lab/apps/scb-cop/source.apk!lib/x86_64/libvosWrapperEx.so",
+            "matches": {
+                "protector": [
+                    "Vkey (V-OS App Protection)"
+                ]
+            }
+        }
+    ],
+    "rules_sha256": "86e8f6088efa375ffcf993b177816ad60688d38457a2868b2734e0bad451b3dd"
+}

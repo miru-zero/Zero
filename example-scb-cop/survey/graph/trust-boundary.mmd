@@ -1,0 +1,47 @@
+flowchart LR
+  n1["Hermes/RN bundle"]:::untrusted
+  n2["com.scb.corporate.MainActivity"]:::trusted
+  n3["Vkey (V-OS App Protection)"]:::trusted
+  n4["Play Integrity API"]:::trusted
+  n5["Build.FINGERPRINT check"]:::trusted
+  n6["Build.MODEL check"]:::trusted
+  n7["Build.MANUFACTURER check"]:::trusted
+  n8["* (webview)"]:::bridge
+  n9["NativeModules (react-native)"]:::bridge
+  n10["libsecurefileio.so"]:::crypto
+  n11["okhttp"]:::network
+  n12["http://localhost/agc/apigw/oauth2/v1/token"]:::external
+  n13["https://accounts.google.com/o/oauth2/revoke?toke"]:::external
+  n14["https://www.googleapis.com/auth/appstate"]:::external
+  n15["https://www.googleapis.com/auth/datastoremobile"]:::external
+  n16["https://www.googleapis.com/auth/drive"]:::external
+  n17["https://www.googleapis.com/auth/drive.appdata"]:::external
+  n18["https://www.googleapis.com/auth/drive.apps"]:::external
+  n19["https://www.googleapis.com/auth/drive.file"]:::external
+  n3 -->|protects| n2
+  n4 -->|protects| n2
+  n5 -->|protects| n2
+  n6 -->|protects| n2
+  n7 -->|protects| n2
+  n1 -->|bridge_call| n8
+  n8 -->|calls| n2
+  n1 -->|bridge_call| n9
+  n9 -->|calls| n2
+  n2 -->|jni_call| n10
+  n2 -->|calls| n11
+  n10 -->|signs_request| n11
+  n11 -->|fetches| n12
+  n11 -->|fetches| n13
+  n11 -->|fetches| n14
+  n11 -->|fetches| n15
+  n11 -->|fetches| n16
+  n11 -->|fetches| n17
+  n11 -->|fetches| n18
+  n11 -->|fetches| n19
+
+classDef untrusted fill:#fee,stroke:#c33
+classDef bridge fill:#ffc,stroke:#c90
+classDef trusted fill:#efe,stroke:#393
+classDef crypto fill:#eef,stroke:#339
+classDef network fill:#eff,stroke:#399
+classDef external fill:#f5f5f5,stroke:#666

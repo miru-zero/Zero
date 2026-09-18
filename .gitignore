@@ -1,0 +1,43 @@
+# Local runtime state and authenticated browser profiles
+runtime/
+.zero/
+
+# Dependencies and generated output
+node_modules/
+dist/
+build/
+coverage/
+**/bin/
+**/obj/
+
+# Secrets and machine-local configuration
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.pfx
+*.p12
+*.crt
+*.cer
+
+# Logs, caches, databases, and temporary files
+*.log
+*.tmp
+*.temp
+*.bak
+*.old
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+.cache/
+tmp/
+temp/
+
+# Editor and operating-system metadata
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+Desktop.ini

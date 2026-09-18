@@ -1,0 +1,162 @@
+{
+  "bridges": [
+    {
+      "type": "webview",
+      "js_name": "*",
+      "host_class": "com.reactnativecommunity.webview.RNCWebView",
+      "host_method": "createRNCWebViewBridge",
+      "methods": [
+        {
+          "name": "callInjectedJavaScript",
+          "risk": "medium",
+          "rule": "default"
+        },
+        {
+          "name": "callInjectedJavaScriptBeforeContentLoaded",
+          "risk": "high",
+          "rule": "exec|run|load|invoke|reflect|shell"
+        },
+        {
+          "name": "cleanupCallbacksAndDestroy",
+          "risk": "medium",
+          "rule": "default"
+        },
+        {
+          "name": "createRNCWebViewBridge",
+          "risk": "medium",
+          "rule": "open|url|intent|webview"
+        },
+        {
+          "name": "destroy",
+          "risk": "medium",
+          "rule": "default"
+        },
+        {
+          "name": "dispatchDirectMessage",
+          "risk": "medium",
+          "rule": "default"
+        },
+        {
+          "name": "dispatchDirectShouldStartLoadWithRequest",
+          "risk": "high",
+          "rule": "exec|run|load|invoke|reflect|shell"
+        },
+        {
+          "name": "dispatchEvent",
+          "risk": "medium",
+          "rule": "default"
+        },
+        {
+          "name": "evaluateJavascriptWithFallback",
+          "risk": "medium",
+          "rule": "default"
+        },
+        {
+          "name": "getMessagingEnabled",
+          "risk": "medium",
+          "rule": "default"
+        },
+        {
+          "name": "getRNCWebViewClient",
+          "risk": "medium",
+          "rule": "open|url|intent|webview"
+        },
+        {
+          "name": "getReactApplicationContext",
+          "risk": "medium",
+          "rule": "default"
+        },
+        {
+          "name": "getThemedReactContext",
+          "risk": "medium",
+          "rule": "default"
+        },
+        {
+          "name": "getWebChromeClient",
+          "risk": "medium",
+          "rule": "default"
+        },
+        {
+          "name": "injectJavascriptObject",
+          "risk": "medium",
+          "rule": "default"
+        },
+        {
+          "name": "onHostDestroy",
+          "risk": "medium",
+          "rule": "default"
+        },
+        {
+          "name": "onHostPause",
+          "risk": "medium",
+          "rule": "default"
+        },
+        {
+          "name": "onHostResume",
+          "risk": "medium",
+          "rule": "default"
+        },
+        {
+          "name": "onMessage",
+          "risk": "medium",
+          "rule": "default"
+        },
+        {
+          "name": "onScrollChanged",
+          "risk": "medium",
+          "rule": "default"
+        },
+        {
+          "name": "onSizeChanged",
+          "risk": "medium",
+          "rule": "default"
+        },
+        {
+          "name": "onTouchEvent",
+          "risk": "medium",
+          "rule": "default"
+        },
+        {
+          "name": "setBasicAuthCredential",
+          "risk": "critical",
+          "rule": "token|session|credential|password|pin|secret|auth|cookie"
+        },
+        {
+          "name": "setHasScrollEvent",
+          "risk": "medium",
+          "rule": "default"
+        }
+      ],
+      "evidence": "dex:com.reactnativecommunity.webview.RNCWebView#createRNCWebViewBridge:addJavascriptInterface"
+    },
+    {
+      "type": "react-native",
+      "js_name": "NativeModules",
+      "host_class": "(react-native)",
+      "host_method": "(module registry)",
+      "methods": [],
+      "evidence": "dex:ReactContextBaseJavaModule"
+    }
+  ],
+  "bridge_count": 2,
+  "high_risk_methods": [
+    {
+      "class": "com.reactnativecommunity.webview.RNCWebView",
+      "name": "callInjectedJavaScriptBeforeContentLoaded",
+      "risk": "high",
+      "rule": "exec|run|load|invoke|reflect|shell"
+    },
+    {
+      "class": "com.reactnativecommunity.webview.RNCWebView",
+      "name": "dispatchDirectShouldStartLoadWithRequest",
+      "risk": "high",
+      "rule": "exec|run|load|invoke|reflect|shell"
+    },
+    {
+      "class": "com.reactnativecommunity.webview.RNCWebView",
+      "name": "setBasicAuthCredential",
+      "risk": "critical",
+      "rule": "token|session|credential|password|pin|secret|auth|cookie"
+    }
+  ]
+}
