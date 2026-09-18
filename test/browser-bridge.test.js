@@ -1,5 +1,8 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 const bridge = require('../src/providers/chatgpt/browser-bridge');
 
 const fakeRuntime = (beforeNode, afterNode) => ({
@@ -254,9 +257,11 @@ test('browser runtime waits for ChatGPT execution context before returning page'
   assert.equal(page.id, 'p1');
   assert.equal(checks, 2);
 });
-test('browser runtime launches headful Chrome without a startup window', async () => {
+test('browser runtime launches headful Chrome without a startup window', async (t) => {
   let fetchCount = 0;
   let spawned = null;
+  const profileDir = fs.mkdtempSync(path.join(os.tmpdir(), 'zero-browser-profile-'));
+  t.after(() => fs.rmSync(profileDir, { recursive: true, force: true }));
   const runtime = bridge.createRuntime({
     fetchImpl: async () => ({ ok: fetchCount++ > 0 }),
     spawnImpl: (command, args, options) => {
@@ -266,7 +271,7 @@ test('browser runtime launches headful Chrome without a startup window', async (
     sleepImpl: async () => {}
   });
   const result = await runtime.ensureBrowser({
-    profileDir: 'P', chromePath: 'chrome.exe', debugPort: 9444, timeoutMs: 1000
+    profileDir, chromePath: 'chrome.exe', debugPort: 9444, timeoutMs: 1000
   });
   assert.deepEqual(result, { endpoint: 'http://127.0.0.1:9444' });
   assert.equal(spawned.command, 'chrome.exe');

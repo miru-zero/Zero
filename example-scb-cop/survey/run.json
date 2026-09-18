@@ -1,7 +1,0 @@
-{
-  "survey_at": "2026-06-22T05:10:35+07:00",
-  "source": "source.apk",
-  "scan_apk": "source.apk",
-  "tools": ["apkid", "androguard", "aapt", "survey-fingerprint.py", "survey-architecture.py"],
-  "androguard_version": "androguard, version 4.1.4"
-}

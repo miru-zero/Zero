@@ -1,9 +1,0 @@
-source.apk, package: 'com.scb.corporate'
-Is signed v1: True
-Is signed v2: True
-Is signed v3: True
-Found 1 unique certificates
-sha1 ce4b60bfd1d3bdfa2f23148b79e865194a1283a2
-
-Found 1 unique public keys associated with the certs
-
