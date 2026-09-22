@@ -81,6 +81,32 @@ test('browser bridge reports AUTH_REQUIRED without opening login UI', async () =
   });
 });
 
+test('browser bridge does not submit when the initial conversation read is rate limited', async () => {
+  let submitted = false;
+  const runtime = fakeRuntime('n1', 'n2');
+  runtime.getConversation = async () => ({ status: 429 });
+  runtime.submitMessage = async () => { submitted = true; };
+  const result = await bridge.send({ conversationId: 'c1', message: 'hello', runtime });
+  assert.equal(result.success, false);
+  assert.equal(result.status, 'RATE_LIMITED');
+  assert.equal(submitted, false);
+});
+
+for (const method of ['waitForSubmission', 'waitForConversation']) {
+  test(`browser runtime ${method} stops reading after the first 429`, async () => {
+    let reads = 0;
+    let sleeps = 0;
+    const runtime = bridge.createRuntime({ sleepImpl: async () => { sleeps += 1; } });
+    runtime.getConversation = async () => { reads += 1; return { status: 429 }; };
+    await assert.rejects(
+      runtime[method]({ page: {}, conversationId: 'c1', previousNode: 'n1', timeoutMs: 1000 }),
+      (error) => error.code === 'RATE_LIMITED' && error.status === 429
+    );
+    assert.equal(reads, 1);
+    assert.equal(sleeps, 0);
+  });
+}
+
 test('browser runtime reuses an existing CDP endpoint without launching Chrome', async () => {
   const seen = [];
   const runtime = bridge.createRuntime({

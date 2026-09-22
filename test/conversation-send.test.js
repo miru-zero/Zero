@@ -23,6 +23,85 @@ test('sendConversation sends into existing conversation using current_node and p
   assert.deepEqual(send.options.body.conversation_mode, { kind: 'gizmo_interaction', gizmo_id: 'g-p-1' });
 });
 
+test('sendConversation mirrors core ChatGPT Web protocol context on existing conversation', async () => {
+  const calls = [];
+  let getCount = 0;
+  const requestJson = async (target, token, headers, options = {}) => {
+    calls.push({ target, options });
+    if (target === '/backend-api/conversations/c-old') {
+      getCount += 1;
+      return {
+        status: 200,
+        json: {
+          conversation_id: 'c-old',
+          current_node: getCount === 1 ? 'node-old' : 'node-new',
+          gizmo_id: 'g-p-1',
+          messages: []
+        }
+      };
+    }
+    if (target === '/backend-api/f/conversation/prepare') {
+      return { status: 200, json: {}, headers: { 'x-conduit-token': 'ct' } };
+    }
+    throw new Error('unexpected ' + target);
+  };
+  const requestText = async (target, token, headers, options = {}) => {
+    calls.push({ target, options });
+    return { status: 200, text: 'data: {"conversation_id":"c-old"}\n\n' };
+  };
+
+  await conversations.sendConversation({
+    conversationId: 'c-old',
+    message: 'hello',
+    localFunctionNames: ['local.example'],
+    transport: 'direct',
+    token: 't',
+    sessionHeaders: {},
+    requestJson,
+    requestText
+  });
+
+  const prepares = calls.filter((x) => x.target === '/backend-api/f/conversation/prepare');
+  const send = calls.find((x) => x.target === '/backend-api/f/conversation');
+
+  assert.equal(prepares[0].options.body.client_prepare_state, 'none');
+  assert.equal(prepares[0].options.body.client_prepare_dispatch, 'immediate');
+  assert.equal(prepares[0].options.body.client_prepare_source, 'context_change');
+  assert.deepEqual(prepares[0].options.body.local_function_names, ['local.example']);
+
+  for (const body of [prepares[0].options.body, prepares[1].options.body, send.options.body]) {
+    assert.equal(typeof body.timezone, 'string');
+    assert.equal(typeof body.timezone_offset_min, 'number');
+    assert.deepEqual(body.model_response_contracts, [{
+      id: 'photo_upload_action.v1',
+      protocol_version: 1,
+      presets: ['cap:image', 'cap:file', 'placement:end']
+    }]);
+    assert.equal(body.client_contextual_info.app_name, 'chatgpt.com');
+  }
+  assert.equal(prepares[0].options.body.fork_from_shared_post, undefined);
+  assert.equal(prepares[1].options.body.fork_from_shared_post, undefined);
+  assert.equal(send.options.body.fork_from_shared_post, undefined);
+  assert.equal(send.options.body.history_and_training_disabled, undefined);
+  assert.equal(send.options.body.enable_message_followups, true);
+  assert.equal(send.options.body.force_use_sse, undefined);
+  assert.equal(send.options.body.force_use_search, undefined);
+  assert.equal(send.options.body.force_paragen, undefined);
+  assert.equal(send.options.body.is_onboarding_conversation, undefined);
+  assert.equal(send.options.body.stream, undefined);
+  assert.deepEqual(send.options.body.local_function_names, ['local.example']);
+  assert.equal(prepares[0].options.body.force_parallel_switch, undefined);
+  assert.equal(prepares[0].options.body.paragen_cot_summary_display_override, undefined);
+  assert.equal(prepares[1].options.body.force_parallel_switch, undefined);
+  assert.equal(prepares[1].options.body.paragen_cot_summary_display_override, undefined);
+  assert.equal(send.options.body.force_parallel_switch, 'auto');
+  assert.equal(send.options.body.paragen_cot_summary_display_override, 'allow');
+  assert.equal(typeof send.options.body.messages[0].create_time, 'number');
+  assert.deepEqual(send.options.body.messages[0].metadata.selected_sources, []);
+  assert.equal(send.options.body.messages[0].metadata.submission_mode, 'manual_send');
+  assert.equal(send.options.body.messages[0].metadata.gizmo_id, 'g-p-1');
+});
+
 test('sendConversation follows prepared browser handoff contract', async () => {
   const calls = [];
   const sessionHeaders = {
@@ -226,4 +305,90 @@ test('sendConversation auto-resolves @connector into system_hints for direct sen
   assert.deepEqual(send.options.body.system_hints, [hint]);
   assert.deepEqual(send.options.body.messages[0].metadata.system_hints, [hint]);
   assert.deepEqual(send.options.body.messages[0].metadata.serialization_metadata.custom_symbol_offsets, [{ id: hint, symbol: 'ecosystemMention', startIndex: 0, endIndex: 25 }]);
+});
+
+test('sendConversation direct forwards onChunk into conversation transport', async () => {
+  const seen = [];
+  let getCount = 0;
+  const requestJson = async (target) => {
+    if (target === '/backend-api/conversations/c-stream') {
+      getCount += 1;
+      return {
+        status: 200,
+        json: {
+          conversation_id: 'c-stream',
+          current_node: getCount === 1 ? 'node-before' : 'node-after',
+          messages: []
+        }
+      };
+    }
+    if (target === '/backend-api/f/conversation/prepare') {
+      return { status: 200, json: {}, headers: { 'x-conduit-token': 'ct' } };
+    }
+    throw new Error('unexpected ' + target);
+  };
+  const requestText = async (target, token, headers, options = {}) => {
+    assert.equal(typeof options.onChunk, 'function');
+    options.onChunk(Buffer.from('data: continuation\n\n'));
+    return { status: 200, text: 'data: {"conversation_id":"c-stream"}\n\n' };
+  };
+  const result = await conversations.sendConversation({
+    conversationId: 'c-stream',
+    message: 'next turn',
+    token: 't',
+    sessionHeaders: {},
+    requestJson,
+    requestText,
+    onChunk: (chunk) => seen.push(chunk.toString('utf8'))
+  });
+
+  assert.equal(result.conversation_id, 'c-stream');
+  assert.equal(result.current_node, 'node-after');
+  assert.deepEqual(seen, ['data: continuation\n\n']);
+});
+
+
+test('sendConversation can hide an internal trigger user message while carrying hidden system context', async () => {
+  const calls = [];
+  let getCount = 0;
+  const requestJson = async (target, token, headers, options = {}) => {
+    calls.push({ target, options });
+    if (target === '/backend-api/conversations/c-hidden') {
+      getCount += 1;
+      return {
+        status: 200,
+        json: {
+          conversation_id: 'c-hidden',
+          current_node: getCount === 1 ? 'node-before' : 'node-after',
+          messages: []
+        }
+      };
+    }
+    if (target === '/backend-api/f/conversation/prepare') {
+      return { status: 200, json: {}, headers: { 'x-conduit-token': 'ct' } };
+    }
+    throw new Error('unexpected ' + target);
+  };
+  const requestText = async (target, token, headers, options = {}) => {
+    calls.push({ target, options });
+    return { status: 200, text: 'data: {"conversation_id":"c-hidden"}\n\n' };
+  };
+
+  await conversations.sendConversation({
+    conversationId: 'c-hidden',
+    message: 'INTERNAL_CONTINUE_TRIGGER',
+    hideUserMessage: true,
+    hiddenSystemMessages: ['TOOL_RESULT_CONTEXT'],
+    token: 't',
+    sessionHeaders: {},
+    requestJson,
+    requestText
+  });
+
+  const send = calls.find((item) => item.target === '/backend-api/f/conversation');
+  assert.equal(send.options.body.messages[0].author.role, 'user');
+  assert.equal(send.options.body.messages[0].content.parts[0], 'INTERNAL_CONTINUE_TRIGGER');
+  assert.equal(send.options.body.messages[0].metadata.is_visually_hidden_from_conversation, true);
+  assert.equal(send.options.body.messages[1].author.role, 'system');
+  assert.equal(send.options.body.messages[1].content.parts[0], 'TOOL_RESULT_CONTEXT');
 });

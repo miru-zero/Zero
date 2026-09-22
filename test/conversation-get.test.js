@@ -32,3 +32,25 @@ test('getConversation fetches detail with dynamic conversation route', async () 
   assert.equal(result.gizmo_id, 'g-p-1');
   assert.equal(result.messages.length, 1);
 });
+
+test('getConversation preserves RATE_LIMITED retry-after metadata', async () => {
+  const requestJson = async () => ({
+    status: 429,
+    json: null,
+    headers: { 'retry-after': '12' }
+  });
+  await assert.rejects(
+    conversations.getConversation({
+      conversationId: 'conv-429',
+      token: 'token-1',
+      sessionHeaders: {},
+      requestJson
+    }),
+    (error) => {
+      assert.equal(error.status, 429);
+      assert.equal(error.code, 'RATE_LIMITED');
+      assert.equal(error.retryAfterMs, 12000);
+      return true;
+    }
+  );
+});

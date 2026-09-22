@@ -8,6 +8,8 @@ const requireOk = (response, target) => {
     const error = new Error(`ChatGPT request failed (${response?.status || 'no-status'}): ${target}`);
     error.status = response?.status || null;
     error.target = target;
+    error.retryAfterMs = chatgptClient.parseRetryAfterMs(response?.headers || {});
+    if (error.status === 429) error.code = 'RATE_LIMITED';
     throw error;
   }
   return response.json;
@@ -199,6 +201,62 @@ exports.getConversation = async ({
   }), target);
 };
 
+exports.getConversationStreamStatus = async ({
+  conversationId,
+  token,
+  sessionHeaders,
+  requestJson = chatgptClient.requestJson
+}) => {
+  if (!conversationId) throw new Error('conversationId is required');
+  const target = `/backend-api/conversation/${encodeURIComponent(conversationId)}/stream_status`;
+  return requireOk(await requestJson(target, token, sessionHeaders, {
+    route: '/backend-api/conversation/{conversation_id}/stream_status'
+  }), target);
+};
+
+exports.resumeConversation = async ({
+  conversationId,
+  offset = 0,
+  conduitToken = null,
+  turnTraceId = null,
+  onChunk = null,
+  token,
+  sessionHeaders,
+  requestText = chatgptClient.requestText
+}) => {
+  if (!conversationId) throw new Error('conversationId is required');
+  if (!Number.isSafeInteger(offset) || offset < 0) throw new Error('offset must be a non-negative integer');
+  const target = '/backend-api/f/conversation/resume';
+  const response = await requestText(target, token, sessionHeaders, {
+    method: 'POST',
+    body: { conversation_id: conversationId, offset },
+    route: target,
+    headers: {
+      accept: 'text/event-stream',
+      origin: sessionHeaders?.origin || sessionHeaders?.Origin || 'https://chatgpt.com',
+      'x-openai-web-frontend': sessionHeaders?.['x-openai-web-frontend'] || 'core_web',
+      ...(conduitToken ? { 'x-conduit-token': conduitToken } : {}),
+      ...(turnTraceId ? { 'x-oai-turn-trace-id': turnTraceId } : {})
+    },
+    retry: false,
+    idleTimeoutMs: 60_000,
+    onChunk
+  });
+  if (!response || response.status < 200 || response.status >= 300) {
+    const error = new Error(`ChatGPT request failed (${response?.status || 'no-status'}): ${target}`);
+    error.status = response?.status || null;
+    error.target = target;
+    error.body = response?.text || null;
+    throw error;
+  }
+  return {
+    conversation_id: conversationId,
+    status: response.status,
+    content_type: response.contentType || null,
+    text: response.text || ''
+  };
+};
+
 exports.getConversationMessagesPage = async ({
   conversationId, before, numTurns = 10, includeHasVersions = true,
   token, sessionHeaders, requestJson = chatgptClient.requestJson
@@ -315,6 +373,8 @@ const requireSuccess = (response, target) => {
     const error = new Error(`ChatGPT request failed (${response?.status || 'no-status'}): ${target}`);
     error.status = response?.status || null;
     error.target = target;
+    error.retryAfterMs = chatgptClient.parseRetryAfterMs(response?.headers || {});
+    if (error.status === 429) error.code = 'RATE_LIMITED';
     throw error;
   }
   return response.json || { success: true };
@@ -441,8 +501,14 @@ const streamObservation = (value) => String(value || '').replace(/^v1\.[rs]\.p\.
 const createUserMessage = (text, id = crypto.randomUUID(), metadata = {}) => ({
   id,
   author: { role: 'user' },
+  create_time: Date.now() / 1000,
   content: { content_type: 'text', parts: [String(text)] },
-  metadata
+  metadata: {
+    selected_sources: [],
+    serialization_metadata: { custom_symbol_offsets: [] },
+    submission_mode: 'manual_send',
+    ...metadata
+  }
 });
 
 // targeted_reply (quote chip ของเว็บ): user message แปะ metadata + hidden system message ตามหลัง
@@ -462,12 +528,15 @@ const targetedReplyMetadata = (targetedReply) => {
   };
 };
 
-const createHiddenTargetedReplyMessage = (text) => ({
+const createHiddenSystemMessage = (text) => ({
   id: crypto.randomUUID(),
   author: { role: 'system' },
-  content: { content_type: 'text', parts: [`The user is referring to this in particular:\n${String(text)}`] },
+  content: { content_type: 'text', parts: [String(text)] },
   metadata: { exclude_after_next_user_message: true, is_visually_hidden_from_conversation: true }
 });
+
+const createHiddenTargetedReplyMessage = (text) =>
+  createHiddenSystemMessage(`The user is referring to this in particular:\n${String(text)}`);
 
 const systemHintMetadata = (systemHints = [], mentions = []) => ({
   ...(systemHints.length ? { system_hints: systemHints } : {}),
@@ -490,13 +559,127 @@ const extractConversationId = (text) => {
   }
   return null;
 };
+
+const createStreamProgress = () => {
+  let pending = '';
+  let conversationId = null;
+  let resumeToken = null;
+  let completed = false;
+  let sawChunk = false;
+  const acceptLine = (line) => {
+    if (!line.startsWith('data:')) return;
+    const data = line.slice(5).trim();
+    if (data === '[DONE]') {
+      completed = true;
+      return;
+    }
+    let event;
+    try { event = JSON.parse(data); } catch { return; }
+    const id = event?.conversation_id || event?.v?.conversation_id;
+    if (typeof id === 'string' && id) conversationId = id;
+    if (event?.type === 'resume_conversation_token' && typeof event.token === 'string' && event.token) {
+      resumeToken = event.token;
+    }
+  };
+  return {
+    push(chunk) {
+      sawChunk = true;
+      pending += Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk || '');
+      const lines = pending.split(/\r?\n/);
+      pending = lines.pop();
+      for (const line of lines) acceptLine(line);
+    },
+    get conversationId() { return conversationId; },
+    get resumeToken() { return resumeToken; },
+    get completed() { return completed; },
+    get sawChunk() { return sawChunk; }
+  };
+};
+
+const sendWithRecovery = async ({
+  target, options, conversationId = null, conduitToken, turnTraceId,
+  token, sessionHeaders, requestText
+}) => {
+  const progress = createStreamProgress();
+  let response = null;
+  let upstreamError = null;
+  try {
+    response = await requestText(target, token, sessionHeaders, {
+      ...options,
+      retry: false,
+      idleTimeoutMs: 60_000,
+      onChunk: (chunk) => {
+        progress.push(chunk);
+        if (typeof options.onChunk === 'function') options.onChunk(chunk);
+      }
+    });
+  } catch (error) {
+    upstreamError = error;
+  }
+  if (response && (response.status < 200 || response.status >= 300)) requireSuccess(response, target);
+  if (response?.text && !progress.sawChunk) progress.push(response.text);
+  const observedId = progress.conversationId || conversationId;
+  if (progress.completed) return { response: response || { status: 200, text: '' }, conversationId: observedId };
+  if (!observedId) {
+    if (upstreamError) throw upstreamError;
+    const error = new Error('conversation stream ended before conversation_id was available');
+    error.code = 'STREAM_INCOMPLETE';
+    throw error;
+  }
+  const resumedProgress = createStreamProgress();
+  const resumed = await exports.resumeConversation({
+    conversationId: observedId,
+    offset: 0,
+    conduitToken: progress.resumeToken || conduitToken,
+    turnTraceId,
+    token,
+    sessionHeaders,
+    requestText,
+    onChunk: (chunk) => {
+      resumedProgress.push(chunk);
+      if (typeof options.onChunk === 'function') options.onChunk(chunk);
+    }
+  });
+  if (resumed.text && !resumedProgress.sawChunk) resumedProgress.push(resumed.text);
+  if (!resumedProgress.completed) {
+    const error = new Error('resumed conversation stream ended before [DONE]');
+    error.code = 'STREAM_INCOMPLETE';
+    throw error;
+  }
+  return { response: response || { status: 200, text: '' }, conversationId: observedId };
+};
 // ค่าสูงสุดตามเว็บจริง (capture OSSGPT: model + thinking_effort ที่เว็บส่ง)
 const DEFAULT_MODEL = 'gpt-5-6-thinking';
 const DEFAULT_THINKING_EFFORT = 'extended';
+const DEFAULT_MODEL_RESPONSE_CONTRACTS = Object.freeze([{
+  id: 'photo_upload_action.v1',
+  protocol_version: 1,
+  presets: ['cap:image', 'cap:file', 'placement:end']
+}]);
 
-const newConversationPrepareBody = ({ projectId = null, model = DEFAULT_MODEL, thinkingEffort = DEFAULT_THINKING_EFFORT, systemHints = [] }) => ({
+const resolveWebProtocolContext = ({ timezone = null, timezoneOffsetMin = null, modelResponseContracts = null, clientContextualInfo = null } = {}) => ({
+  timezone: timezone || Intl.DateTimeFormat().resolvedOptions().timeZone || null,
+  timezone_offset_min: Number.isFinite(timezoneOffsetMin) ? timezoneOffsetMin : new Date().getTimezoneOffset(),
+  model_response_contracts: Array.isArray(modelResponseContracts) ? modelResponseContracts : DEFAULT_MODEL_RESPONSE_CONTRACTS,
+  client_contextual_info: clientContextualInfo && typeof clientContextualInfo === 'object'
+    ? { ...clientContextualInfo }
+    : { app_name: 'chatgpt.com' }
+});
+
+const newConversationPrepareBody = ({
+  projectId = null,
+  model = DEFAULT_MODEL,
+  thinkingEffort = DEFAULT_THINKING_EFFORT,
+  systemHints = [],
+  localFunctionNames = null,
+  timezone = null,
+  timezoneOffsetMin = null,
+  modelResponseContracts = null,
+  clientContextualInfo = null,
+  includeForkFromSharedPost = false
+}) => ({
   action: 'next',
-  fork_from_shared_post: false,
+  ...(includeForkFromSharedPost ? { fork_from_shared_post: false } : {}),
   parent_message_id: 'client-created-root',
   model,
   thinking_effort: thinkingEffort,
@@ -505,26 +688,77 @@ const newConversationPrepareBody = ({ projectId = null, model = DEFAULT_MODEL, t
   system_hints: systemHints,
   supports_buffering: true,
   supported_encodings: ['v1'],
-  client_contextual_info: { app_name: 'chatgpt.com' },
+  ...resolveWebProtocolContext({ timezone, timezoneOffsetMin, modelResponseContracts, clientContextualInfo }),
+  ...(Array.isArray(localFunctionNames) && localFunctionNames.length ? { local_function_names: [...localFunctionNames] } : {}),
   client_prepare_dispatch: 'debounced',
   client_prepare_source: 'window_focus'
 });
 
-const newConversationSendBody = ({ message, projectId = null, model = DEFAULT_MODEL, thinkingEffort = DEFAULT_THINKING_EFFORT, systemHints = [], systemHintMentions = [], targetedReply = null }) => ({
+const newConversationSendBody = ({
+  message,
+  projectId = null,
+  model = DEFAULT_MODEL,
+  thinkingEffort = DEFAULT_THINKING_EFFORT,
+  systemHints = [],
+  systemHintMentions = [],
+  targetedReply = null,
+  hiddenSystemMessages = [],
+  hideUserMessage = false,
+  timezone = null,
+  timezoneOffsetMin = null,
+  modelResponseContracts = null,
+  clientContextualInfo = null,
+  localFunctionNames = null,
+  enableMessageFollowups = true,
+  historyAndTrainingDisabled = false,
+  forceUseSse = null,
+  forceUseSearch = null,
+  forceParagen = false,
+  isOnboardingConversation = false,
+  stream = null,
+  serviceTier = null,
+  forceParallelSwitch = 'auto',
+  paragenCotSummaryDisplayOverride = 'allow',
+  includeForkFromSharedPost = false
+}) => ({
   action: 'next',
-  fork_from_shared_post: false,
+  ...(includeForkFromSharedPost ? { fork_from_shared_post: false } : {}),
+  ...(historyAndTrainingDisabled === true ? { history_and_training_disabled: true } : {}),
   parent_message_id: 'client-created-root',
   model,
   thinking_effort: thinkingEffort,
   client_prepare_state: 'success',
   conversation_mode: conversationMode(projectId),
-  enable_message_followups: false,
+  enable_message_followups: enableMessageFollowups,
+  ...(forceUseSse != null ? { force_use_sse: forceUseSse } : {}),
+  ...(forceUseSearch != null ? { force_use_search: forceUseSearch } : {}),
+  ...(forceParagen === true ? { force_paragen: true } : {}),
   system_hints: systemHints,
+  ...(isOnboardingConversation === true ? { is_onboarding_conversation: true } : {}),
   supports_buffering: true,
   supported_encodings: ['v1'],
-  client_contextual_info: { app_name: 'chatgpt.com' },
+  ...resolveWebProtocolContext({ timezone, timezoneOffsetMin, modelResponseContracts, clientContextualInfo }),
+  ...(Array.isArray(localFunctionNames) && localFunctionNames.length ? { local_function_names: [...localFunctionNames] } : {}),
+  ...(serviceTier ? { service_tier: serviceTier } : {}),
+  ...(forceParallelSwitch ? { force_parallel_switch: forceParallelSwitch } : {}),
+  ...(paragenCotSummaryDisplayOverride ? { paragen_cot_summary_display_override: paragenCotSummaryDisplayOverride } : {}),
+  ...(stream != null ? { stream } : {}),
   messages: [
-    createUserMessage(message, undefined, { ...systemHintMetadata(systemHints, systemHintMentions), ...targetedReplyMetadata(targetedReply) }),
+    createUserMessage(message, undefined, {
+      ...(projectId ? { gizmo_id: projectId } : {}),
+      ...(serviceTier ? { service_tier: serviceTier } : {}),
+      ...systemHintMetadata(systemHints, systemHintMentions),
+      ...targetedReplyMetadata(targetedReply),
+      ...(hideUserMessage ? {
+        exclude_after_next_user_message: true,
+        is_visually_hidden_from_conversation: true
+      } : {})
+    }),
+    ...(Array.isArray(hiddenSystemMessages)
+      ? hiddenSystemMessages
+        .filter((text) => typeof text === 'string' && text.trim())
+        .map((text) => createHiddenSystemMessage(text))
+      : []),
     ...(targetedReply?.text ? [createHiddenTargetedReplyMessage(targetedReply.text)] : [])
   ]
 });
@@ -537,6 +771,18 @@ exports.createConversation = async ({
   systemHints = null,
   systemHintMentions = null,
   targetedReply = null,
+  hiddenSystemMessages = [],
+  hideUserMessage = false,
+  localFunctionNames = null,
+  timezone = null,
+  timezoneOffsetMin = null,
+  modelResponseContracts = null,
+  clientContextualInfo = null,
+  enableMessageFollowups = true,
+  forceParallelSwitch = 'auto',
+  paragenCotSummaryDisplayOverride = 'allow',
+  onChunk = null,
+  recoverStream = false,
   token,
   sessionHeaders,
   listConnectors = exports.listConnectors,
@@ -551,7 +797,7 @@ exports.createConversation = async ({
   const prepareTarget = '/backend-api/f/conversation/prepare';
   const prepareResponse = await requestJson(prepareTarget, token, sessionHeaders, {
     method: 'POST',
-    body: newConversationPrepareBody({ projectId, model, thinkingEffort, systemHints }),
+    body: newConversationPrepareBody({ projectId, model, thinkingEffort, systemHints, localFunctionNames, timezone, timezoneOffsetMin, modelResponseContracts, clientContextualInfo }),
     route: prepareTarget,
     headers: { 'x-oai-turn-trace-id': traceId }
   });
@@ -570,21 +816,29 @@ exports.createConversation = async ({
     // fallback: ใช้ sentinel headers จาก session เดิมถ้า fetch สดไม่สำเร็จ
   }
   const sendTarget = '/backend-api/f/conversation';
-  const sendResponse = await requestText(sendTarget, token, sessionHeaders, {
+  const sendOptions = {
     method: 'POST',
-    body: newConversationSendBody({ message, projectId, model, thinkingEffort, systemHints, systemHintMentions, targetedReply }),
+    body: newConversationSendBody({ message, projectId, model, thinkingEffort, systemHints, systemHintMentions, targetedReply, hiddenSystemMessages, hideUserMessage, timezone, timezoneOffsetMin, modelResponseContracts, clientContextualInfo, localFunctionNames, enableMessageFollowups, forceParallelSwitch, paragenCotSummaryDisplayOverride }),
     route: sendTarget,
     headers: {
       ...sentinelHeaders,
       'x-conduit-token': conduitToken,
       'x-oai-turn-trace-id': traceId,
       accept: 'text/event-stream'
-    }
-  });
+    },
+    onChunk
+  };
+  const sent = recoverStream
+    ? await sendWithRecovery({
+      target: sendTarget, options: sendOptions, conduitToken, turnTraceId: traceId,
+      token, sessionHeaders, requestText
+    })
+    : { response: await requestText(sendTarget, token, sessionHeaders, sendOptions) };
+  const sendResponse = sent.response;
   if (!sendResponse || sendResponse.status < 200 || sendResponse.status >= 300) {
     requireSuccess(sendResponse, sendTarget);
   }
-  const conversationId = extractConversationId(sendResponse.text);
+  const conversationId = sent.conversationId || extractConversationId(sendResponse.text);
   if (!conversationId) throw new Error('conversation response missing conversation_id');
   const conversation = await exports.getConversation({ conversationId, token, sessionHeaders, requestJson });
   try {
@@ -603,6 +857,18 @@ const sendConversationDirect = async ({
   systemHints = null,
   systemHintMentions = null,
   targetedReply = null,
+  hiddenSystemMessages = [],
+  hideUserMessage = false,
+  localFunctionNames = null,
+  timezone = null,
+  timezoneOffsetMin = null,
+  modelResponseContracts = null,
+  clientContextualInfo = null,
+  enableMessageFollowups = true,
+  forceParallelSwitch = 'auto',
+  paragenCotSummaryDisplayOverride = 'allow',
+  onChunk = null,
+  recoverStream = false,
   token,
   sessionHeaders,
   listConnectors = exports.listConnectors,
@@ -631,7 +897,7 @@ const sendConversationDirect = async ({
   const traceId = crypto.randomUUID();
   const prepareTarget = '/backend-api/f/conversation/prepare';
   const prepareBody = {
-    ...newConversationPrepareBody({ projectId, model, thinkingEffort, systemHints }),
+    ...newConversationPrepareBody({ projectId, model, thinkingEffort, systemHints, localFunctionNames, timezone, timezoneOffsetMin, modelResponseContracts, clientContextualInfo, includeForkFromSharedPost: false }),
     conversation_id: conversationId,
     parent_message_id: parentMessageId,
     client_prepare_dispatch: 'immediate',
@@ -664,11 +930,11 @@ const sendConversationDirect = async ({
   conduitToken = preparedResponse?.headers?.['x-conduit-token'] || conduitToken;
   const sendTarget = '/backend-api/f/conversation';
   const sendBody = {
-    ...newConversationSendBody({ message, projectId, model, thinkingEffort, systemHints, systemHintMentions, targetedReply }),
+    ...newConversationSendBody({ message, projectId, model, thinkingEffort, systemHints, systemHintMentions, targetedReply, hiddenSystemMessages, hideUserMessage, timezone, timezoneOffsetMin, modelResponseContracts, clientContextualInfo, localFunctionNames, enableMessageFollowups, forceParallelSwitch, paragenCotSummaryDisplayOverride }),
     conversation_id: conversationId,
     parent_message_id: parentMessageId
   };
-  const sendResponse = await requestText(sendTarget, token, turnHeaders, {
+  const sendOptions = {
     method: 'POST', body: sendBody, route: sendTarget,
     headers: {
       ...sentinelHeaders,
@@ -676,8 +942,16 @@ const sendConversationDirect = async ({
       'x-oai-turn-trace-id': traceId,
       'x-oai-is-client-observation': streamObservation(turnHeaders['x-oai-is-client-observation']),
       accept: 'text/event-stream'
-    }
-  });
+    },
+    onChunk
+  };
+  const sent = recoverStream
+    ? await sendWithRecovery({
+      target: sendTarget, options: sendOptions, conversationId, conduitToken, turnTraceId: traceId,
+      token, sessionHeaders: turnHeaders, requestText
+    })
+    : { response: await requestText(sendTarget, token, turnHeaders, sendOptions) };
+  const sendResponse = sent.response;
   if (!sendResponse || sendResponse.status < 200 || sendResponse.status >= 300) requireSuccess(sendResponse, sendTarget);
   const after = await exports.getConversation({ conversationId, token, sessionHeaders, requestJson });
   // previous_node = current_node ก่อนส่ง (baseline สำหรับเช็คว่าห้องมีข้อความใหม่หลัง dispatch หรือยัง)

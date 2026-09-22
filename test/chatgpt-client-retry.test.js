@@ -29,8 +29,35 @@ const mockSequence = (steps) => {
 
 const noSleep = () => Promise.resolve();
 
-test('requestJson retries on 429 then succeeds', async () => {
-  const mock = mockSequence([{ status: 429 }, { status: 200, body: '{"ok":true}' }]);
+test('requestJson returns the first 429 without another request by default', async () => {
+  const mock = mockSequence([{ status: 429 }, { status: 200 }]);
+  try {
+    const res = await chatgptClient.requestJson('/backend-api/x', 't', {});
+    assert.equal(res.status, 429);
+    assert.equal(mock.calls.length, 1);
+  } finally { mock.restore(); }
+});
+
+test('requestText returns the first 429 without another request by default', async () => {
+  const mock = mockSequence([{ status: 429 }, { status: 200 }]);
+  try {
+    const res = await chatgptClient.requestText('/backend-api/f/conversation', 't', {}, { method: 'POST' });
+    assert.equal(res.status, 429);
+    assert.equal(mock.calls.length, 1);
+  } finally { mock.restore(); }
+});
+
+test('requestJson does not retry a POST after a server error by default', async () => {
+  const mock = mockSequence([{ status: 503 }, { status: 200 }]);
+  try {
+    const res = await chatgptClient.requestJson('/backend-api/x', 't', {}, { method: 'POST', body: { message: 'once' } });
+    assert.equal(res.status, 503);
+    assert.equal(mock.calls.length, 1);
+  } finally { mock.restore(); }
+});
+
+test('requestJson retries on 503 then succeeds', async () => {
+  const mock = mockSequence([{ status: 503 }, { status: 200, body: '{"ok":true}' }]);
   try {
     const res = await chatgptClient.requestJson('/backend-api/x', 't', {}, { retry: { sleepImpl: noSleep } });
     assert.equal(res.status, 200);
@@ -40,7 +67,7 @@ test('requestJson retries on 429 then succeeds', async () => {
 });
 
 test('requestJson honors Retry-After seconds before retrying', async () => {
-  const mock = mockSequence([{ status: 429, headers: { 'retry-after': '2' } }, { status: 200 }]);
+  const mock = mockSequence([{ status: 503, headers: { 'retry-after': '2' } }, { status: 200 }]);
   const waits = [];
   const captureSleep = (ms) => { waits.push(ms); return Promise.resolve(); };
   try {
@@ -51,7 +78,7 @@ test('requestJson honors Retry-After seconds before retrying', async () => {
 });
 
 test('requestJson falls back to exponential backoff without Retry-After', async () => {
-  const mock = mockSequence([{ status: 429 }, { status: 429 }, { status: 200 }]);
+  const mock = mockSequence([{ status: 503 }, { status: 503 }, { status: 200 }]);
   const waits = [];
   const captureSleep = (ms) => { waits.push(ms); return Promise.resolve(); };
   try {
@@ -61,11 +88,11 @@ test('requestJson falls back to exponential backoff without Retry-After', async 
   } finally { mock.restore(); }
 });
 
-test('requestJson gives up after maxRetries and returns last 429', async () => {
-  const mock = mockSequence([{ status: 429 }]);
+test('requestJson gives up after maxRetries and returns last 503', async () => {
+  const mock = mockSequence([{ status: 503 }]);
   try {
     const res = await chatgptClient.requestJson('/backend-api/x', 't', {}, { retry: { sleepImpl: noSleep, maxRetries: 2 } });
-    assert.equal(res.status, 429);
+    assert.equal(res.status, 503);
     assert.equal(mock.calls.length, 3);
   } finally { mock.restore(); }
 });
@@ -88,8 +115,8 @@ test('requestJson retry:false disables retry', async () => {
   } finally { mock.restore(); }
 });
 
-test('requestText retries on 429 then succeeds', async () => {
-  const mock = mockSequence([{ status: 429 }, { status: 200, body: 'data: [DONE]' }]);
+test('requestText retries on 503 then succeeds when explicitly requested', async () => {
+  const mock = mockSequence([{ status: 503 }, { status: 200, body: 'data: [DONE]' }]);
   try {
     const res = await chatgptClient.requestText('/backend-api/f/conversation', 't', {}, { retry: { sleepImpl: noSleep } });
     assert.equal(res.status, 200);

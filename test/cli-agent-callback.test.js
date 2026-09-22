@@ -47,6 +47,37 @@ test('CLI agent spawn dispatches without starting a watcher', async () => {
   fs.rmSync(ctx.dir, { recursive: true, force: true });
 });
 
+test('CLI agent takeover creates a continuation worker from source conversation', async () => {
+  const ctx = setup();
+  let received = null;
+  const result = await cli.run(
+    ['chatgpt', 'agent', 'takeover', 'C_MAIN', 'continue verified NEXT'],
+    ctx.env,
+    ctx.output,
+    {
+      spawnTakeover: async (input) => {
+        received = input;
+        return {
+          status: 'DISPATCHED',
+          task_id: 'T_TAKEOVER',
+          agent_id: 'C_WORKER_NEW',
+          source_conversation_id: 'C_MAIN',
+          output_dir: 'X:/conversions/C_WORKER_NEW',
+          current_node: 'N_WORK_DONE'
+        };
+      }
+    }
+  );
+  assert.equal(result.exitCode, 0);
+  assert.equal(received.parentConversationId, 'C_MAIN');
+  assert.equal(received.taskMessage, 'continue verified NEXT');
+  assert.equal(received.taskFile, ctx.env.ZERO_AGENT_TASK_FILE);
+  assert.match(ctx.output.text, /status=DISPATCHED/);
+  assert.match(ctx.output.text, /agent_id=C_WORKER_NEW/);
+  assert.match(ctx.output.text, /source_conversation_id=C_MAIN/);
+  fs.rmSync(ctx.dir, { recursive: true, force: true });
+});
+
 test('CLI agent return pushes worker report through task metadata', async () => {
   const ctx = setup();
   let received = null;
@@ -68,5 +99,40 @@ test('CLI agent return pushes worker report through task metadata', async () => 
   assert.match(ctx.output.text, /status=DELIVERED/);
   assert.match(ctx.output.text, /parent_conversation_id=C_MAIN/);
   assert.match(ctx.output.text, /current_node=N_PARENT_RETURN/);
+  fs.rmSync(ctx.dir, { recursive: true, force: true });
+});
+
+test('CLI agent resume continues existing takeover task without new worker', async () => {
+  const ctx = setup();
+  let received = null;
+  const result = await cli.run(
+    ['chatgpt', 'agent', 'resume', 'T_RESUME'],
+    ctx.env,
+    ctx.output,
+    {
+      resumeTakeover: async (input) => {
+        received = input;
+        return {
+          status: 'RATE_LIMITED',
+          task_id: 'T_RESUME',
+          agent_id: 'C_WORKER',
+          source_conversation_id: 'C_MAIN',
+          audit_cursor: 4,
+          audit_total_user_turns: 9,
+          audit_next_window: '5-8',
+          http_status: 429,
+          output_dir: 'X:/conversions/C_WORKER'
+        };
+      }
+    }
+  );
+  assert.equal(result.exitCode, 0);
+  assert.equal(received.taskId, 'T_RESUME');
+  assert.equal(received.taskFile, ctx.env.ZERO_AGENT_TASK_FILE);
+  assert.match(ctx.output.text, /status=RATE_LIMITED/);
+  assert.match(ctx.output.text, /agent_id=C_WORKER/);
+  assert.match(ctx.output.text, /audit_cursor=4\/9/);
+  assert.match(ctx.output.text, /audit_next_window=5-8/);
+  assert.match(ctx.output.text, /http_status=429/);
   fs.rmSync(ctx.dir, { recursive: true, force: true });
 });

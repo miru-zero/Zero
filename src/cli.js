@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+const fs = require('node:fs');
 const path = require('node:path');
 const authLoader = require('./core/auth-loader');
 const authStatus = require('./core/auth-status');
@@ -6,8 +7,6 @@ const authRefresh = require('./core/auth-refresh');
 const sessionContext = require('./core/session-context');
 const journalCore = require('./core/journal');
 const reportCore = require('./core/report');
-const conversations = require('./providers/chatgpt/conversations');
-const orchestrator = require('./providers/chatgpt/agents/orchestrator');
 const toolsHub = require('./hub');
 const interactiveMenu = require('./interactive-menu');
 
@@ -22,6 +21,18 @@ const resolveSessionFile = (env) => env.ZERO_CHATGPT_SESSION_FILE
 const resolveAgentTaskFile = (env) => env.ZERO_AGENT_TASK_FILE
   ? path.resolve(env.ZERO_AGENT_TASK_FILE)
   : path.resolve(__dirname, '../runtime/agent-tasks.json');
+
+const resolveAgentProjectId = (env) => {
+  if (env.ZERO_AGENT_PROJECT_ID) return env.ZERO_AGENT_PROJECT_ID;
+  const settingsFile = path.resolve(__dirname, '../runtime/agent-settings.json');
+  if (!fs.existsSync(settingsFile)) return null;
+  try {
+    const parsed = JSON.parse(fs.readFileSync(settingsFile, 'utf8'));
+    return typeof parsed?.project_id === 'string' && parsed.project_id.trim() ? parsed.project_id.trim() : null;
+  } catch {
+    return null;
+  }
+};
 
 const exitCodes = { VALID: 0, MISSING: 2, EXPIRED: 3, INVALID: 4 };
 
@@ -199,6 +210,53 @@ const messageText = (message) => {
   return '(non-text)';
 };
 
+const debugValue = (value) => value == null ? '-' : typeof value === 'object' ? JSON.stringify(value) : String(value);
+
+const messageDebugLines = (message, messages) => {
+  const metadata = message?.metadata || {};
+  return [
+    '[DEBUG]',
+    `id=${message?.id || '-'}`,
+    `parent_id=${parentIdFor(messages, message) || '-'}`,
+    `status=${message?.status || '-'}`,
+    `end_turn=${debugValue(message?.end_turn)}`,
+    `content_type=${message?.content?.content_type || '-'}`,
+    `author_name=${message?.author?.name || '-'}`,
+    `recipient=${message?.recipient || '-'}`,
+    `channel=${message?.channel || '-'}`,
+    `request_id=${metadata.request_id || '-'}`,
+    `turn_id=${metadata.turn_id || '-'}`,
+    `turn_exchange_id=${metadata.turn_exchange_id || '-'}`,
+    `working_turn_id=${metadata.working_turn_id || '-'}`,
+    `model_slug=${metadata.model_slug || '-'}`,
+    `finish_details=${debugValue(metadata.finish_details)}`
+  ];
+};
+
+const moderationDebugLines = (conversation) => {
+  const messages = Array.isArray(conversation?.messages) ? conversation.messages : [];
+  const byId = new Map(messages.filter((message) => message?.id).map((message) => [message.id, message]));
+  const results = Array.isArray(conversation?.moderation_results) ? conversation.moderation_results : [];
+  const lines = [];
+  for (const result of results) {
+    const matched = byId.get(result?.message_id);
+    const metadata = result?.metadata || {};
+    lines.push('[MODERATION]');
+    lines.push(`message_id=${result?.message_id || '-'}`);
+    lines.push(`matched_message=${Boolean(matched)}`);
+    lines.push(`matched_role=${matched?.author?.role || '-'}`);
+    lines.push(`blocked=${debugValue(result?.blocked)}`);
+    lines.push(`flagged=${debugValue(result?.flagged)}`);
+    lines.push(`should_disable_conversation=${debugValue(result?.should_disable_conversation)}`);
+    lines.push(`safety_limited=${debugValue(metadata.safety_limited)}`);
+    lines.push(`protection_type=${metadata.protection_type || '-'}`);
+    lines.push(`block_reason=${metadata.safety_plugin_block_reason || result?.block_reason || '-'}`);
+    lines.push(`disclaimers=${debugValue(result?.disclaimers)}`);
+    lines.push(`metadata=${debugValue(metadata)}`, '');
+  }
+  return lines;
+};
+
 const groupUserTurns = (messages = []) => {
   const turns = [];
   let current = null;
@@ -229,6 +287,7 @@ const formatUserTurns = (conversation, spec, debug = false) => {
     : turns.slice(spec.start - 1, spec.end);
   const lines = [`user_turns=${turns.length}`];
   const visibleMessages = [];
+  const allMessages = Array.isArray(conversation.messages) ? conversation.messages : [];
   let editableUser = null;
   for (const turn of selected) {
     let visibleIndex = 0;
@@ -239,11 +298,12 @@ const formatUserTurns = (conversation, spec, debug = false) => {
       const role = rawRole.toUpperCase();
       lines.push(visibleIndex === 0 ? `[#${turn.number}] ${role}` : role);
       lines.push(messageText(message), '');
+      if (debug) lines.push(...messageDebugLines(message, allMessages), '');
       visibleMessages.push(message);
       visibleIndex += 1;
     }
   }
-  const allMessages = Array.isArray(conversation.messages) ? conversation.messages : [];
+  if (debug) lines.push(...moderationDebugLines(conversation));
   const lastMessage = visibleMessages.at(-1);
   if (lastMessage?.id) {
     lines.push(`message_id=${lastMessage.id}`);
@@ -566,6 +626,8 @@ const runInner = async (args = process.argv.slice(2), env = process.env, output 
 
   const isConversationGet = command === 'conversation' && action === 'get' && Boolean(args[2]);
   const isConversationInit = command === 'conversation' && action === 'init' && Boolean(args[2]) && args.length === 3;
+  const isConversationStreamStatus = command === 'conversation' && action === 'stream-status' && Boolean(args[2]) && args.length === 3;
+  const isConversationResume = command === 'conversation' && action === 'resume' && Boolean(args[2]) && args.length === 3;
   const modelOptFor = (modelIndex, baseLength) => args.length === baseLength || (args.length === baseLength + 2 && args[modelIndex] === 'model' && Boolean(args[modelIndex + 1]));
   const isConversationNew = command === 'conversation' && action === 'new' && Boolean(args[2]) && modelOptFor(3, 3);
   const isConversationSend = command === 'conversation' && action === 'send' && Boolean(args[2]) && Boolean(args[3]) && modelOptFor(4, 4);
@@ -579,6 +641,8 @@ const runInner = async (args = process.argv.slice(2), env = process.env, output 
   const isProjectRename = command === 'project' && action === 'rename' && Boolean(args[2]) && Boolean(args[3]) && args.length === 4;
   const isProjectDel = command === 'project' && action === 'del' && Boolean(args[2]) && args.length === 3;
   const isProjectSave = command === 'project' && action === 'save' && Boolean(args[2]) && Boolean(args[3]) && Boolean(args[4]) && args.length === 5;
+  const isAgentTakeover = command === 'agent' && action === 'takeover' && Boolean(args[2]) && Boolean(args[3]) && args.length === 4;
+  const isAgentResume = command === 'agent' && action === 'resume' && Boolean(args[2]) && args.length === 3;
   const isAgentSpawn = command === 'agent' && action === 'spawn' && Boolean(args[2]) && Boolean(args[3]) && Boolean(args[4]) && args.length === 5;
   const isAgentReturn = command === 'agent' && action === 'return' && Boolean(args[2]) && Boolean(args[3]) && args.length === 4;
   const isAgentSay = command === 'agent' && action === 'say' && Boolean(args[2]) && Boolean(args[3]) && args.length === 4;
@@ -586,7 +650,7 @@ const runInner = async (args = process.argv.slice(2), env = process.env, output 
   const isAgentStatus = command === 'agent' && action === 'status' && Boolean(args[2]) && args.length === 3;
   const isAgentCheck = command === 'agent' && action === 'check' && Boolean(args[2]) && args.length === 3;
   const isAgentList = command === 'agent' && action === 'list' && args.length === 2;
-  const isAgentCommand = isAgentSpawn || isAgentReturn || isAgentSay || isAgentReply || isAgentStatus || isAgentCheck || isAgentList;
+  const isAgentCommand = isAgentTakeover || isAgentResume || isAgentSpawn || isAgentReturn || isAgentSay || isAgentReply || isAgentStatus || isAgentCheck || isAgentList;
   const isConnectors = command === 'connectors' && args.length === 1;
   const isSearch = command === 'search' && args.length >= 2;
   const isManagement = isConversationNew || isConversationSend || isProjectConversationNew || isConversationRename
@@ -597,7 +661,7 @@ const runInner = async (args = process.argv.slice(2), env = process.env, output 
   const validGetOptions = !isConversationGet || args.length === 3
     || allMode
     || (args[3] === 'limit' && limitSpec && (args.length === 5 || (args.length === 6 && debugMode)));
-  if ((command !== 'conversations' && !isSearch && !isConnectors && !isConversationGet && !isConversationInit && !isProjectConversations && !isManagement && !isAgentCommand) || !validGetOptions) {
+  if ((command !== 'conversations' && !isSearch && !isConnectors && !isConversationGet && !isConversationInit && !isConversationStreamStatus && !isConversationResume && !isProjectConversations && !isManagement && !isAgentCommand) || !validGetOptions) {
     output.write('Usage (provider chatgpt · internal):\n');
     output.write('  zero chatgpt                                      ลิสต์ tools ของ provider นี้\n');
     output.write('  zero chatgpt call <tool> \'<json>\'                 เรียก tool ตรงๆ (uniform เหมือน provider อื่น)\n');
@@ -610,6 +674,8 @@ const runInner = async (args = process.argv.slice(2), env = process.env, output 
     output.write('  zero chatgpt conversation get <conversation_id>           อ่าน metadata ห้อง (current_node ฯลฯ)\n');
     output.write('  zero chatgpt conversation get <conversation_id> all       อ่านทุก historical page แบบ raw page boundaries\n');
     output.write('  zero chatgpt conversation init <conversation_id>          อ่าน init metadata ห้อง (default model + limits ตามเว็บจริง)\n');
+    output.write('  zero chatgpt conversation stream-status <conversation_id> อ่านสถานะ completion stream ปัจจุบัน\n');
+    output.write('  zero chatgpt conversation resume <conversation_id>        resume completion stream เดิมจาก backend\n');
     output.write('  zero chatgpt conversation get <conversation_id> limit <N|A-B> [debug]\n');
     output.write('                                                            อ่าน N เทิร์นล่าสุด หรือเทิร์น A ถึง B; debug เห็น system/tool nodes\n');
     output.write('  zero chatgpt conversation rename <conversation_id> <title>  เปลี่ยนชื่อห้อง\n');
@@ -625,6 +691,9 @@ const runInner = async (args = process.argv.slice(2), env = process.env, output 
     output.write('  zero chatgpt project conversation new <project_id> <message> [model <slug>]  สร้างห้องใน project พร้อมข้อความแรก\n');
     output.write('\n');
     output.write('เอเจนต์ (ห้องคุยกันผ่าน zero):\n');
+    output.write('  zero chatgpt agent takeover <source_conversation_id> <message>\n');
+    output.write('                                                            สร้าง worker ใหม่เอง → audit source → ทำงานต่อหลัง gate เปิด\n');
+    output.write('  zero chatgpt agent resume <task_id>                     resume takeover เดิมจาก cursor เดิม; ไม่สร้าง worker ใหม่\n');
     output.write('  zero chatgpt agent spawn <worker_conversation_id> <parent_conversation_id> <message>\n');
     output.write('                                                            สั่งงาน worker พร้อมฝัง task_id + return rule (คืนหลัง dispatch สำเร็จ; ไม่รอ worker จบ)\n');
     output.write('  zero chatgpt agent say <task_id> <message>                parent ส่งข้อความต่อเข้าห้อง worker (คุยต่อได้ไม่ปิดงาน)\n');
@@ -651,6 +720,7 @@ const runInner = async (args = process.argv.slice(2), env = process.env, output 
     output.write('Env:\n');
     output.write('  ZERO_CHATGPT_SEND_TRANSPORT=browser               ใช้ browser bridge แทน direct API (default=direct)\n');
     output.write('  ZERO_AGENT_TASK_FILE=<path>                       ที่เก็บ task registry (default runtime/agent-tasks.json)\n');
+    output.write('  ZERO_AGENT_PROJECT_ID=<g-p-...>                   Project ปลายทางสำหรับ worker takeover (override runtime/agent-settings.json)\n');
     output.write('  ZERO_CONFIG_FILE=<path>                           config ของ tools hub (default runtime/zero.config.json)\n');
     return { exitCode: 64 };
   }
@@ -669,32 +739,45 @@ const runInner = async (args = process.argv.slice(2), env = process.env, output 
     output.write(`session=${session.status}\n`);
     return { exitCode: 5 };
   }
+
+  const chatgptContext = {
+    token: inspected.loaded.token,
+    sessionHeaders: session.headers,
+    taskFile: resolveAgentTaskFile(env)
+  };
+  const callChatgptTool = async (toolName, toolArgs = {}) => {
+    if (typeof dependencies.callChatgptTool === 'function') {
+      return dependencies.callChatgptTool(toolName, toolArgs, chatgptContext);
+    }
+    const providerHub = createHub({ env });
+    try {
+      return await providerHub.callTool('chatgpt', toolName, toolArgs, chatgptContext);
+    } finally {
+      if (providerHub && typeof providerHub.close === 'function') providerHub.close();
+    }
+  };
+
   if (isSearch) {
-    const fn = dependencies.searchGlobal || (async (input) => {
-      const searchHub = createHub({ env });
-      try {
-        return await searchHub.callTool('chatgpt', 'global_search', { query: input.query, source: input.source || 'conversation' }, { token: input.token, sessionHeaders: input.sessionHeaders });
-      } finally {
-        if (searchHub && typeof searchHub.close === 'function') searchHub.close();
-      }
-    });
     try {
       const query = args.slice(1).join(' ').trim();
-      const result = await fn({
-        query,
-        source: 'conversation',
-        token: inspected.loaded.token,
-        sessionHeaders: session.headers
-      });
+      const result = dependencies.searchGlobal
+        ? await dependencies.searchGlobal({
+          query,
+          source: 'conversation',
+          token: inspected.loaded.token,
+          sessionHeaders: session.headers
+        })
+        : await callChatgptTool('global_search', { query, source: 'conversation' });
       output.write(formatSearchResults(result));
       return { exitCode: 0, search: result };
     } catch (error) {
       return handleRequestError(error, output);
     }
   }  if (isConnectors) {
-    const fn = dependencies.listConnectors || conversations.listConnectors;
     try {
-      const items = await fn({ token: inspected.loaded.token, sessionHeaders: session.headers });
+      const items = dependencies.listConnectors
+        ? await dependencies.listConnectors({ token: inspected.loaded.token, sessionHeaders: session.headers })
+        : await callChatgptTool('connectors_list');
       output.write(formatConnectors(items));
       return { exitCode: 0, connectors: items };
     } catch (error) {
@@ -704,46 +787,91 @@ const runInner = async (args = process.argv.slice(2), env = process.env, output 
   if (isAgentCommand) {
     const base = { token: inspected.loaded.token, sessionHeaders: session.headers, taskFile: resolveAgentTaskFile(env) };
     try {
-      if (isAgentSpawn) {
-        const fn = dependencies.spawnAgent || orchestrator.spawnAgent;
-        const result = await fn({
-          ...base,
-          workerConversationId: args[2],
-          parentConversationId: args[3],
-          parentTaskId: env.ZERO_AGENT_PARENT_TASK_ID || null,
-          taskMessage: args[4]
-        });
+      if (isAgentTakeover) {
+        const result = dependencies.spawnTakeover
+          ? await dependencies.spawnTakeover({
+            ...base,
+            parentConversationId: args[2],
+            workerProjectId: resolveAgentProjectId(env),
+            parentTaskId: env.ZERO_AGENT_PARENT_TASK_ID || null,
+            taskMessage: args[3]
+          })
+          : await callChatgptTool('agent_takeover', {
+            parent_conversation_id: args[2],
+            worker_project_id: resolveAgentProjectId(env),
+            parent_task_id: env.ZERO_AGENT_PARENT_TASK_ID || null,
+            message: args[3]
+          });
+        output.write(`status=${result.status}\ntask_id=${result.task_id}\nagent_id=${result.agent_id}\nsource_conversation_id=${result.source_conversation_id}\nworker_project_id=${result.worker_project_id || '-'}\noutput_dir=${result.output_dir}\n`);
+        if (result.audit_cursor !== undefined) output.write(`audit_cursor=${result.audit_cursor}/${result.audit_total_user_turns || 0}\n`);
+        if (result.audit_next_window) output.write(`audit_next_window=${result.audit_next_window}\n`);
+        if (result.http_status) output.write(`http_status=${result.http_status}\n`);
+        if (result.retry_after_ms !== undefined && result.retry_after_ms !== null) output.write(`retry_after_ms=${result.retry_after_ms}\n`);
+        if (result.retry_not_before) output.write(`retry_not_before=${result.retry_not_before}\n`);
+        if (result.current_node) output.write(`current_node=${result.current_node}\n`);
+      } else if (isAgentResume) {
+        const result = dependencies.resumeTakeover
+          ? await dependencies.resumeTakeover({ ...base, taskId: args[2] })
+          : await callChatgptTool('agent_resume', { task_id: args[2] });
+        output.write(`status=${result.status}\ntask_id=${result.task_id}\nagent_id=${result.agent_id}\nsource_conversation_id=${result.source_conversation_id}\noutput_dir=${result.output_dir}\n`);
+        if (result.audit_cursor !== undefined) output.write(`audit_cursor=${result.audit_cursor}/${result.audit_total_user_turns || 0}\n`);
+        if (result.audit_next_window) output.write(`audit_next_window=${result.audit_next_window}\n`);
+        if (result.http_status) output.write(`http_status=${result.http_status}\n`);
+        if (result.retry_after_ms !== undefined && result.retry_after_ms !== null) output.write(`retry_after_ms=${result.retry_after_ms}\n`);
+        if (result.retry_not_before) output.write(`retry_not_before=${result.retry_not_before}\n`);
+        if (result.current_node) output.write(`current_node=${result.current_node}\n`);
+      } else if (isAgentSpawn) {
+        const result = dependencies.spawnAgent
+          ? await dependencies.spawnAgent({
+            ...base,
+            workerConversationId: args[2],
+            parentConversationId: args[3],
+            parentTaskId: env.ZERO_AGENT_PARENT_TASK_ID || null,
+            taskMessage: args[4]
+          })
+          : await callChatgptTool('agent_spawn', {
+            worker_conversation_id: args[2],
+            parent_conversation_id: args[3],
+            parent_task_id: env.ZERO_AGENT_PARENT_TASK_ID || null,
+            message: args[4]
+          });
         output.write(`status=${result.status}\ntask_id=${result.task_id}\nagent_id=${result.agent_id}\n`);
         if (result.current_node) output.write(`current_node=${result.current_node}\n`);
       } else if (isAgentReturn) {
-        const fn = dependencies.returnAgent || orchestrator.returnAgent;
-        const result = await fn({ ...base, taskId: args[2], report: args[3] });
+        const result = dependencies.returnAgent
+          ? await dependencies.returnAgent({ ...base, taskId: args[2], report: args[3] })
+          : await callChatgptTool('agent_return', { task_id: args[2], report: args[3] });
         output.write(`status=${result.status}\ntask_id=${result.task_id}\nparent_conversation_id=${result.parent_conversation_id}\n`);
         if (result.current_node) output.write(`current_node=${result.current_node}\n`);
       } else if (isAgentSay) {
-        const fn = dependencies.sendMessage || orchestrator.sendMessage;
-        const result = await fn({ ...base, taskId: args[2], message: args[3] });
+        const result = dependencies.sendMessage
+          ? await dependencies.sendMessage({ ...base, taskId: args[2], message: args[3] })
+          : await callChatgptTool('agent_say', { task_id: args[2], message: args[3] });
         output.write(`status=${result.status}\ntask_id=${result.task_id}\nagent_id=${result.agent_id}\n`);
         if (result.current_node) output.write(`current_node=${result.current_node}\n`);
       } else if (isAgentReply) {
-        const fn = dependencies.replyAgent || orchestrator.replyAgent;
-        const result = await fn({ ...base, taskId: args[2], message: args[3] });
+        const result = dependencies.replyAgent
+          ? await dependencies.replyAgent({ ...base, taskId: args[2], message: args[3] })
+          : await callChatgptTool('agent_reply', { task_id: args[2], message: args[3] });
         output.write(`status=${result.status}\ntask_id=${result.task_id}\nparent_conversation_id=${result.parent_conversation_id}\n`);
         if (result.current_node) output.write(`current_node=${result.current_node}\n`);
       } else if (isAgentCheck) {
-        const fn = dependencies.checkAgent || orchestrator.checkAgent;
-        const result = await fn({ ...base, taskId: args[2] });
+        const result = dependencies.checkAgent
+          ? await dependencies.checkAgent({ ...base, taskId: args[2] })
+          : await callChatgptTool('agent_check', { task_id: args[2] });
         output.write(`status=${result.task.status}\ntask_id=${result.task.task_id}\ndelivered=${result.delivered}\n`);
         if (result.task.delivery_status) output.write(`delivery=${result.task.delivery_status}\n`);
       } else if (isAgentStatus) {
-        const fn = dependencies.agentStatus || orchestrator.agentStatus;
-        const task = fn({ ...base, taskId: args[2] });
+        const task = dependencies.agentStatus
+          ? await dependencies.agentStatus({ ...base, taskId: args[2] })
+          : await callChatgptTool('agent_status', { task_id: args[2] });
         output.write(`task_id=${task.task_id}\nstatus=${task.status}\nworker=${task.worker_conversation_id}\nparent=${task.parent_conversation_id}\n`);
         if (task.delivery_status) output.write(`delivery=${task.delivery_status}\n`);
         if (task.result_text) output.write(`result=${task.result_text.slice(0, 200)}\n`);
       } else {
-        const fn = dependencies.listAgents || orchestrator.listAgents;
-        const tasks = fn({ ...base });
+        const tasks = dependencies.listAgents
+          ? await dependencies.listAgents({ ...base })
+          : await callChatgptTool('agent_list');
         output.write(`tasks=${tasks.length}\n`);
         for (const task of tasks) {
           output.write(`  ${task.task_id}  ${task.status}  worker=${task.worker_conversation_id}  parent=${task.parent_conversation_id}  delivery=${task.delivery_status || '-'}\n`);
@@ -756,14 +884,22 @@ const runInner = async (args = process.argv.slice(2), env = process.env, output 
     const base = { token: inspected.loaded.token, sessionHeaders: session.headers };
     try {
       if (isConversationNew || isProjectConversationNew) {
-        const fn = dependencies.createConversation || conversations.createConversation;
         const projectId = isProjectConversationNew ? args[3] : null;
         const message = isProjectConversationNew ? args[4] : args[2];
         const modelIndex = isProjectConversationNew ? 5 : 3;
         const model = args[modelIndex] === 'model' ? args[modelIndex + 1] : undefined;
-        const listConnectors = dependencies.listConnectors || conversations.listConnectors;
+        const listConnectors = dependencies.listConnectors
+          || (() => callChatgptTool('connectors_list'));
         const selection = await resolveSystemHintSelections({ message, ...base, listConnectors });
-        const created = await fn({ ...base, message, projectId, model, ...selection });
+        const created = dependencies.createConversation
+          ? await dependencies.createConversation({ ...base, message, projectId, model, ...selection })
+          : await callChatgptTool('conversation_new', {
+            message,
+            project_id: projectId,
+            model,
+            system_hints: selection.systemHints,
+            system_hint_mentions: selection.systemHintMentions
+          });
         const conversationId = created?.conversation_id || created?.id || '-';
         output.write(`status=OK\nconversation_id=${conversationId}\n`);
         if (projectId) output.write(`project_id=${projectId}\n`);
@@ -776,59 +912,89 @@ const runInner = async (args = process.argv.slice(2), env = process.env, output 
         }
         if (created?.current_node) output.write(`current_node=${created.current_node}\n`);
       } else if (isConversationSend) {
-        const fn = dependencies.sendConversation || conversations.sendConversation;
-        const sent = await fn({
-          ...base,
-          conversationId: args[2],
-          message: args[3],
-          model: args[4] === 'model' ? args[5] : undefined,
-          transport: env.ZERO_CHATGPT_SEND_TRANSPORT === 'browser' ? 'browser' : 'direct'
-        });
+        const model = args[4] === 'model' ? args[5] : undefined;
+        const transport = env.ZERO_CHATGPT_SEND_TRANSPORT === 'browser' ? 'browser' : 'direct';
+        const sent = dependencies.sendConversation
+          ? await dependencies.sendConversation({
+            ...base,
+            conversationId: args[2],
+            message: args[3],
+            model,
+            transport
+          })
+          : await callChatgptTool('conversation_send', {
+            conversation_id: args[2],
+            message: args[3],
+            model,
+            transport
+          });
         output.write(`status=DISPATCHED\nconversation_id=${sent?.conversation_id || sent?.id || args[2]}\n`);
         if (args[4] === 'model') output.write(`model=${args[5]}\n`);
         if (sent?.current_node) output.write(`current_node=${sent.current_node}\n`);
       } else if (isConversationRename) {
-        const fn = dependencies.renameConversation || conversations.renameConversation;
-        await fn({ ...base, conversationId: args[2], title: args[3] });
+        if (dependencies.renameConversation) {
+          await dependencies.renameConversation({ ...base, conversationId: args[2], title: args[3] });
+        } else {
+          await callChatgptTool('conversation_rename', { conversation_id: args[2], title: args[3] });
+        }
         output.write(`status=OK\nconversation_id=${args[2]}\n`);
       } else if (isConversationDel) {
-        const fn = dependencies.deleteConversation || conversations.deleteConversation;
-        await fn({ ...base, conversationId: args[2] });
+        if (dependencies.deleteConversation) {
+          await dependencies.deleteConversation({ ...base, conversationId: args[2] });
+        } else {
+          await callChatgptTool('conversation_delete', { conversation_id: args[2] });
+        }
         output.write(`status=OK\nconversation_id=${args[2]}\n`);
       } else if (isConversationMove) {
-        const fn = dependencies.moveConversation || conversations.moveConversation;
         const projectId = args[3] === 'exit' ? null : args[3];
-        await fn({ ...base, conversationId: args[2], projectId });
+        if (dependencies.moveConversation) {
+          await dependencies.moveConversation({ ...base, conversationId: args[2], projectId });
+        } else {
+          await callChatgptTool('conversation_move', { conversation_id: args[2], project_id: projectId });
+        }
         output.write(`status=OK\nconversation_id=${args[2]}\nproject_id=${projectId || '-'}\n`);
       } else if (isProjectNew) {
-        const fn = dependencies.createProject || conversations.createProject;
-        const result = await fn({ ...base, name: args[2] });
+        const result = dependencies.createProject
+          ? await dependencies.createProject({ ...base, name: args[2] })
+          : await callChatgptTool('project_create', { name: args[2] });
         const projectId = result?.id || result?.project_id || result?.gizmo?.id || result?.gizmo?.gizmo?.id || '-';
         output.write(`status=OK\nproject_id=${projectId}\n`);
       } else if (isProjectRename) {
-        const fn = dependencies.renameProject || conversations.renameProject;
-        await fn({ ...base, projectId: args[2], name: args[3] });
+        if (dependencies.renameProject) {
+          await dependencies.renameProject({ ...base, projectId: args[2], name: args[3] });
+        } else {
+          await callChatgptTool('project_rename', { project_id: args[2], name: args[3] });
+        }
         output.write(`status=OK\nproject_id=${args[2]}\n`);
       } else if (isProjectDel) {
-        const fn = dependencies.deleteProject || conversations.deleteProject;
-        await fn({ ...base, projectId: args[2] });
+        if (dependencies.deleteProject) {
+          await dependencies.deleteProject({ ...base, projectId: args[2] });
+        } else {
+          await callChatgptTool('project_delete', { project_id: args[2] });
+        }
         output.write(`status=OK\nproject_id=${args[2]}\n`);
       } else if (isProjectSave) {
-        const fn = dependencies.saveProjectMessage || conversations.saveProjectMessage;
-        await fn({ ...base, projectId: args[2], conversationId: args[3], messageId: args[4] });
+        if (dependencies.saveProjectMessage) {
+          await dependencies.saveProjectMessage({ ...base, projectId: args[2], conversationId: args[3], messageId: args[4] });
+        } else {
+          await callChatgptTool('project_save', {
+            project_id: args[2], conversation_id: args[3], message_id: args[4]
+          });
+        }
         output.write(`status=OK\nproject_id=${args[2]}\nconversation_id=${args[3]}\nmessage_id=${args[4]}\n`);
       }
       return { exitCode: 0 };
     } catch (error) { return handleRequestError(error, output); }
   }
   if (isProjectConversations) {
-    const listProjectConversationPage = dependencies.listProjectConversationPage || conversations.listProjectConversationPage;
     try {
-      const page = await listProjectConversationPage({
-        projectId: args[2],
-        token: inspected.loaded.token,
-        sessionHeaders: session.headers
-      });
+      const page = dependencies.listProjectConversationPage
+        ? await dependencies.listProjectConversationPage({
+          projectId: args[2],
+          token: inspected.loaded.token,
+          sessionHeaders: session.headers
+        })
+        : await callChatgptTool('project_conversations', { project_id: args[2] });
       output.write(formatProjectConversations(args[2], page));
       return { exitCode: 0, projectId: args[2], conversations: page };
     } catch (error) {
@@ -837,29 +1003,28 @@ const runInner = async (args = process.argv.slice(2), env = process.env, output 
   }
   if (isConversationGet) {
     if (allMode) {
-      const getAll = dependencies.getConversationHistory || (async (input) => {
-        const historyHub = createHub({ env });
-        try {
-          return await historyHub.callTool('chatgpt', 'conversation_all', { conversation_id: input.conversationId }, { token: input.token, sessionHeaders: input.sessionHeaders });
-        } finally {
-          if (historyHub && typeof historyHub.close === 'function') historyHub.close();
-        }
-      });
       try {
-        const history = await getAll({ conversationId: args[2], token: inspected.loaded.token, sessionHeaders: session.headers });
+        const history = dependencies.getConversationHistory
+          ? await dependencies.getConversationHistory({
+            conversationId: args[2],
+            token: inspected.loaded.token,
+            sessionHeaders: session.headers
+          })
+          : await callChatgptTool('conversation_all', { conversation_id: args[2] });
         output.write(JSON.stringify(history, null, 2) + '\n');
         return { exitCode: 0, history };
       } catch (error) {
         return handleRequestError(error, output);
       }
     }
-    const getConversation = dependencies.getConversation || conversations.getConversation;
     try {
-      const conversation = await getConversation({
-        conversationId: args[2],
-        token: inspected.loaded.token,
-        sessionHeaders: session.headers
-      });
+      const conversation = dependencies.getConversation
+        ? await dependencies.getConversation({
+          conversationId: args[2],
+          token: inspected.loaded.token,
+          sessionHeaders: session.headers
+        })
+        : await callChatgptTool('conversation_get', { conversation_id: args[2] });
       output.write(formatConversation(conversation, !limitSpec));
       if (limitSpec) output.write(formatUserTurns(conversation, limitSpec, debugMode));
       return { exitCode: 0, conversation };
@@ -868,13 +1033,14 @@ const runInner = async (args = process.argv.slice(2), env = process.env, output 
     }
   }
   if (isConversationInit) {
-    const initConversation = dependencies.initConversation || conversations.initConversation;
     try {
-      const init = await initConversation({
-        conversationId: args[2],
-        token: inspected.loaded.token,
-        sessionHeaders: session.headers
-      });
+      const init = dependencies.initConversation
+        ? await dependencies.initConversation({
+          conversationId: args[2],
+          token: inspected.loaded.token,
+          sessionHeaders: session.headers
+        })
+        : await callChatgptTool('conversation_init', { conversation_id: args[2] });
       output.write(`status=OK\nconversation_id=${args[2]}\n`);
       output.write(`default_model_slug=${init?.default_model_slug || '-'}\n`);
       output.write(`intended_default_model_slug=${init?.intended_default_model_slug || '-'}\n`);
@@ -889,24 +1055,59 @@ const runInner = async (args = process.argv.slice(2), env = process.env, output 
     }
   }
 
-  const listAll = dependencies.listAll || conversations.listAll;
+  if (isConversationStreamStatus) {
+    try {
+      const status = dependencies.getConversationStreamStatus
+        ? await dependencies.getConversationStreamStatus({
+          conversationId: args[2],
+          token: inspected.loaded.token,
+          sessionHeaders: session.headers
+        })
+        : await callChatgptTool('conversation_stream_status', { conversation_id: args[2] });
+      output.write(`status=${status?.status || '-'}\nconversation_id=${args[2]}\n`);
+      return { exitCode: 0, streamStatus: status };
+    } catch (error) {
+      return handleRequestError(error, output);
+    }
+  }
+  if (isConversationResume) {
+    try {
+      const resumed = dependencies.resumeConversation
+        ? await dependencies.resumeConversation({
+          conversationId: args[2],
+          token: inspected.loaded.token,
+          sessionHeaders: session.headers
+        })
+        : await callChatgptTool('conversation_resume', { conversation_id: args[2] });
+      output.write(`status=OK\nconversation_id=${resumed?.conversation_id || args[2]}\n`);
+      output.write(`http_status=${resumed?.status ?? '-'}\n`);
+      output.write(`content_type=${resumed?.content_type || '-'}\n`);
+      if (resumed?.text) output.write(resumed.text.endsWith('\n') ? resumed.text : `${resumed.text}\n`);
+      return { exitCode: 0, resume: resumed };
+    } catch (error) {
+      return handleRequestError(error, output);
+    }
+  }
+
   output.write('Loading conversations...\n');
   try {
-    const result = await listAll({
-      token: inspected.loaded.token,
-      sessionHeaders: session.headers,
-      onProgress: (event) => {
-        if (event.type === 'conversation-page') {
-          output.write(`  Indexed ${event.count} conversations...\n`);
-        } else if (event.type === 'standalone-loaded') {
-          output.write(`[OK] Conversation index: ${event.count}\n`);
-        } else if (event.type === 'projects-loaded') {
-          output.write(`[OK] Projects: ${event.count}\n`);
-        } else if (event.type === 'done') {
-          output.write(`[OK] Loaded ${event.returned ?? event.total} conversations from this page\n\n`);
+    const result = dependencies.listAll
+      ? await dependencies.listAll({
+        token: inspected.loaded.token,
+        sessionHeaders: session.headers,
+        onProgress: (event) => {
+          if (event.type === 'conversation-page') {
+            output.write(`  Indexed ${event.count} conversations...\n`);
+          } else if (event.type === 'standalone-loaded') {
+            output.write(`[OK] Conversation index: ${event.count}\n`);
+          } else if (event.type === 'projects-loaded') {
+            output.write(`[OK] Projects: ${event.count}\n`);
+          } else if (event.type === 'done') {
+            output.write(`[OK] Loaded ${event.returned ?? event.total} conversations from this page\n\n`);
+          }
         }
-      }
-    });
+      })
+      : await callChatgptTool('conversations_list');
 
     output.write(formatConversations(result));
     return { exitCode: 0, conversations: result };

@@ -68,12 +68,16 @@
 | R3 | เพิ่ม provider `mcp-flow` (M:\Zero_Lab\rewjava\mcp-flow) | listTools/call ผ่าน zero ได้ | ⚠️ ป๊าสั่งไว้: **อย่าเพิ่งนำเข้า** จนกว่าจะสั่ง |
 | R4 | mcp-http transport ใน hub (รองรับ remote MCP เช่น mcp.desktopcommander.app) | provider type `mcp-http` ใช้งานได้ | เพิ่ม type ใหม่จุดเดียวใน src/hub/index.js |
 | R5 | zero เปิดเป็น MCP server ให้ client ภายนอกต่อเข้ามา (hub ตัวเดิม fan-out) | client ภายนอก listTools/callTool ผ่าน zero ได้ | เฟสสุดท้ายของแผนศูนย์กลาง — ทำหลัง CLI นิ่ง |
+| R6 | **ChatGPT Web stream status primitive** — เพิ่ม `conversation_stream_status` สำหรับ `GET /backend-api/conversation/{conversation_id}/stream_status` | `zero chatgpt` เรียกดูสถานะ stream ได้จริง + test fixture + live probe | VERIFIED live 2026-09-19: ห้อง `6aacf8d7-ce38-83ec-a415-1842cd77fa39` ตอบ `200 {"status":"COMPLETE"}`; ใช้เป็น state probe ไม่ใช่ moderation result |
+| R7 | **ChatGPT Web stream resume/recovery** — เพิ่ม internal `conversation_resume` สำหรับ `POST /backend-api/f/conversation/resume` และเก็บ `conversation_id + resume_token + stream_offset + attempt_count` จาก SSE `resume_conversation_token` | เมื่อ SSE หลุด Zero resume turn เดิมได้โดยไม่ resend prompt/สร้าง turn ใหม่ + regression tests + live recovery proof | Frontend VERIFIED ว่า `/f/conversation` = send, `/f/conversation/resume` = resume; retry policy ที่พบ `maxRetryCount=12`, `minDelayMs=300`, `maxDelayMs=5000`, `retryFactor=1.5`. **ก่อน implement ต้องพิสูจน์ request body/header producer ให้ครบ ห้ามเดา payload** |
+| R8 | **User personalization refresh / `user_system_messages`** — เพิ่ม `user_context_get` สำหรับ `GET /backend-api/user_system_messages` และ refresh ก่อน **เปิดห้องใหม่ / เริ่ม session / takeover สำคัญ** เพื่อรู้ account personalization ล่าสุด | Zero อ่าน user/account context ล่าสุดได้จริงและบันทึก snapshot/hash สำหรับ audit โดยไม่ยัดค่าเหล่านี้ซ้ำเข้า `/f/conversation` payload | VERIFIED live 2026-09-19: endpoint ตอบ `200 user_system_message_detail` และ frontend ใช้เป็น query `userContext`; `PATCH /user_system_messages` ใช้แก้ personalization. **Contract: read/refresh state แยกจาก conversation send; ห้ามสร้าง system message ซ้ำเอง** |
+| R9 | **About You / Memory correction** — เพิ่ม primitive ให้ Zero ใช้ `/backend-api/memories/about_you/correction` เพื่อให้มิรุสามารถเสนอและส่งการแก้ไข About You/Memory ที่คลาดเคลื่อนได้จากงานจริง | พิสูจน์ method + request/response schema จาก frontend/capture จริง, เพิ่ม read-before-write + diff preview + regression tests + live correction proof | **ห้ามเดา payload หรือเขียนทับแบบ blind**; ก่อนแก้ต้องอ่านค่าปัจจุบัน, แสดง old→new ที่จะเปลี่ยน, รักษา provenance/เหตุผลของ correction และใช้เฉพาะเมื่อป๊าสั่งหรืออนุมัติการแก้ไขนั้น |
 
 ---
 
 ## กติกาที่ผูกกับ plan นี้
 
 - ทุกงานต้องมีหลักฐาน execution (exit code / output / ภาพ) — ห้ามเคลม success ลอยๆ
-- แก้ config/ไฟล์สำคัญ → `backup_edit` ก่อนเสมอ
+- แก้ config/ไฟล์สำคัญ → backup ก่อนเสมอ โดยใช้ **rolling backup สูงสุด 3 ไฟล์ต่อไฟล์ต้นฉบับ**; เมื่อสร้าง backup ใหม่แล้วเกิน 3 ให้ลบ backup ที่เก่าสุดออก 1 ไฟล์ทันที แล้วรักษาไว้เฉพาะ 3 รุ่นล่าสุด
 - scratch/probe ทั้งหมดอยู่ใน `.zero/` ห้ามรก repo root
 - จบงานสำคัญ → จด episode ลง zero-brain + อัปเดตไฟล์ plan นี้

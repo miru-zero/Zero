@@ -52,6 +52,73 @@ test('spawnAgent resolves parent turn, dispatches worker, and persists RUNNING t
   fs.rmSync(ctx.dir, { recursive: true, force: true });
 });
 
+test('spawnTakeover creates worker from source conversation and dispatches SELF_ID continuation', async () => {
+  const ctx = setup();
+  const created = [];
+  const sends = [];
+  const result = await orchestrator.spawnTakeover({
+    taskFile: ctx.taskFile,
+    conversionsDir: path.join(ctx.dir, 'conversions'),
+    parentConversationId: 'C_MAIN',
+    taskMessage: 'continue verified NEXT',
+    taskId: 'T_TAKEOVER',
+    getConversation: async () => ({ conversation_id: 'C_MAIN', current_node: 'N_MAIN', gizmo_id: 'P1', user_turns: 1 }),
+    createConversation: async (input) => {
+      created.push(input);
+      return { conversation_id: 'C_WORKER_NEW', current_node: 'N_AUDIT' };
+    },
+    runAudit: async () => ({ complete: true, cursor: 1, nextWindow: null }),
+    sendConversation: async (input) => {
+      sends.push(input);
+      return { conversation_id: input.conversationId, previous_node: 'N_AUDIT', current_node: 'N_WORK_DONE' };
+    }
+  });
+  assert.equal(result.status, 'DISPATCHED');
+  assert.equal(result.agent_id, 'C_WORKER_NEW');
+  assert.equal(result.source_conversation_id, 'C_MAIN');
+  assert.equal(created.length, 1);
+  assert.equal(created[0].projectId, 'P1');
+  assert.match(created[0].message, /ZERO_TAKEOVER_INIT/);
+  assert.match(created[0].message, /source_conversation_id=C_MAIN/);
+  assert.match(created[0].message, /node \.\\src\\cli\.js chatgpt conversation get C_MAIN/);
+  assert.doesNotMatch(created[0].message, /Begin with: zero chatgpt/);
+  assert.match(created[0].message, /continue verified NEXT/);
+  assert.equal(sends.length, 1);
+  assert.equal(sends[0].conversationId, 'C_WORKER_NEW');
+  assert.match(sends[0].message, /ZERO_TAKEOVER_START/);
+  assert.match(sends[0].message, /worker_conversation_id=C_WORKER_NEW/);
+  assert.match(sends[0].message, /result\.txt/);
+  const task = taskRegistry.getTask({ filePath: ctx.taskFile, taskId: 'T_TAKEOVER' });
+  assert.equal(task.mode, 'TAKEOVER');
+  assert.equal(task.parent_conversation_id, 'C_MAIN');
+  assert.equal(task.worker_conversation_id, 'C_WORKER_NEW');
+  assert.equal(task.worker_init_node_id, 'N_AUDIT');
+  assert.equal(task.dispatch_node_id, 'N_AUDIT');
+  assert.equal(task.status, 'RUNNING');
+  fs.rmSync(ctx.dir, { recursive: true, force: true });
+});
+
+test('spawnTakeover rejects a second active takeover for the same parent before any API call', async () => {
+  const ctx = setup();
+  taskRegistry.createTask({ filePath: ctx.taskFile, task: {
+    task_id: 'T_ACTIVE', parent_task_id: null, parent_conversation_id: 'C_MAIN',
+    parent_turn_id: 'N_MAIN', worker_conversation_id: 'C_WORKER',
+    dispatch_node_id: 'N_DISPATCH', mode: 'TAKEOVER', status: 'RUNNING'
+  }});
+
+  await assert.rejects(
+    () => orchestrator.spawnTakeover({
+      taskFile: ctx.taskFile,
+      parentConversationId: 'C_MAIN',
+      taskMessage: 'continue verified NEXT',
+      getConversation: async () => { throw new Error('API must not be called'); },
+      createConversation: async () => { throw new Error('API must not be called'); }
+    }),
+    (error) => error.code === 'ACTIVE_TAKEOVER_EXISTS' && error.taskId === 'T_ACTIVE'
+  );
+  fs.rmSync(ctx.dir, { recursive: true, force: true });
+});
+
 test('checkTask marks final worker result DONE and enqueues SUBAGENT_RETURN once', async () => {
   const ctx = setup();
   taskRegistry.createTask({ filePath: ctx.taskFile, task: {

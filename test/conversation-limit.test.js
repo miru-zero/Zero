@@ -103,6 +103,30 @@ test('limit debug shows all roles in selected USER groups', async () => {
   fs.rmSync(ctx.dir, { recursive: true, force: true });
 });
 
+test('limit debug prints message state and moderation records including orphan ids', async () => {
+  const ctx = setup();
+  const conversation = {
+    conversation_id: 'conv-debug', title: 'Debug Test', current_node: 'a1',
+    messages: [
+      { id: 'u1', author: { role: 'user' }, content: { content_type: 'text', parts: ['probe'] }, status: 'finished_successfully', metadata: { request_id: 'req-u1', turn_id: 'turn-u1' } },
+      { id: 'a1', parent_id: 'u1', author: { role: 'assistant' }, content: { content_type: 'text', parts: ['answer'] }, status: 'finished_successfully', end_turn: true, recipient: 'all', channel: 'final', metadata: { request_id: 'req-a1', turn_id: 'turn-a1', model_slug: 'gpt-test', finish_details: { type: 'stop' } } }
+    ],
+    moderation_results: [
+      { message_id: 'a1', blocked: true, flagged: false, should_disable_conversation: false, disclaimers: null, metadata: { safety_limited: true, protection_type: 'cyber' } },
+      { message_id: 'orphan-1', blocked: true, flagged: false, should_disable_conversation: false, disclaimers: null, metadata: { safety_limited: true, protection_type: 'cyber' } }
+    ]
+  };
+  const result = await cli.run(['chatgpt', 'conversation', 'get', 'conv-debug', 'limit', '1', 'debug'], ctx.env, ctx.output, {
+    getConversation: async () => conversation
+  });
+
+  assert.equal(result.exitCode, 0);
+  assert.match(ctx.output.text, /\[DEBUG\][\s\S]*id=a1[\s\S]*parent_id=u1[\s\S]*status=finished_successfully[\s\S]*content_type=text[\s\S]*request_id=req-a1[\s\S]*turn_id=turn-a1[\s\S]*model_slug=gpt-test[\s\S]*finish_details=\{"type":"stop"\}/);
+  assert.match(ctx.output.text, /\[MODERATION\][\s\S]*message_id=a1[\s\S]*matched_message=true[\s\S]*matched_role=assistant[\s\S]*blocked=true[\s\S]*safety_limited=true[\s\S]*protection_type=cyber/);
+  assert.match(ctx.output.text, /message_id=orphan-1[\s\S]*matched_message=false/);
+  fs.rmSync(ctx.dir, { recursive: true, force: true });
+});
+
 const stateMsg = (id, parentId, role, text) => ({
   id,
   author: { role },

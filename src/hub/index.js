@@ -15,11 +15,13 @@ exports.createHub = ({ env = process.env, clientFactory } = {}) => {
   const clients = new Map();
   const rootDir = path.resolve(__dirname, '../..'); // src/hub → repo root
 
-  // {root} = repo root — ให้ config เขียน path/env แบบไม่ฟิกค่าตายตัว ย้ายเครื่องไม่พัง
-  const expandRoot = (value) => {
+  // placeholders ทำให้ provider ย้ายที่ได้โดยไม่ต้องแก้ client
+  const expandValue = (value, provider = null) => {
     if (typeof value !== 'string') return value;
-    const withRoot = value.replaceAll('{root}', rootDir.replace(/\\/g, '/'));
-    return withRoot.replace(/\{env:([A-Za-z_][A-Za-z0-9_]*)\}/g, (_match, name) => env[name] || '');
+    let expanded = value.replaceAll('{root}', rootDir.replace(/\\/g, '/'));
+    if (config.mcpRoot) expanded = expanded.replaceAll('{mcpRoot}', config.mcpRoot.replace(/\\/g, '/'));
+    if (provider?.providerRoot) expanded = expanded.replaceAll('{providerRoot}', provider.providerRoot.replace(/\\/g, '/'));
+    return expanded.replace(/\{env:([A-Za-z_][A-Za-z0-9_]*)\}/g, (_match, name) => env[name] || '');
   };
 
   const getProvider = (name) => {
@@ -33,23 +35,31 @@ exports.createHub = ({ env = process.env, clientFactory } = {}) => {
     return provider;
   };
 
-  const resolveProviderCommand = (value) => {
-    const expanded = expandRoot(value);
+  const resolveProviderCommand = (value, provider) => {
+    const expanded = expandValue(value, provider);
     if (typeof expanded !== 'string' || !expanded) return expanded;
     if (path.isAbsolute(expanded)) return expanded;
-    return /[\\/]/.test(expanded) ? path.resolve(rootDir, expanded) : expanded;
+    const baseDir = provider?.providerRoot || rootDir;
+    return /[\\/]/.test(expanded) ? path.resolve(baseDir, expanded) : expanded;
+  };
+
+  const resolveProviderCwd = (provider) => {
+    if (!provider.cwd) return rootDir;
+    const expanded = expandValue(provider.cwd, provider);
+    if (path.isAbsolute(expanded)) return path.normalize(expanded);
+    return path.resolve(provider.providerRoot || rootDir, expanded);
   };
 
   const getMcpClient = (provider) => {
     if (!clients.has(provider.name)) {
-      const command = resolveProviderCommand(provider.command);
-      const args = (provider.args || []).map(expandRoot);
-      const env = Object.fromEntries(Object.entries(provider.env || {}).map(([key, value]) => [key, expandRoot(value)]));
+      const command = resolveProviderCommand(provider.command, provider);
+      const args = (provider.args || []).map((value) => expandValue(value, provider));
+      const env = Object.fromEntries(Object.entries(provider.env || {}).map(([key, value]) => [key, expandValue(value, provider)]));
       clients.set(provider.name, makeClient({
         command,
         args,
         env,
-        cwd: rootDir, // ล็อก cwd ของ child ให้นิ่ง ไม่ขึ้นกับที่ยืนรัน zero (เช่น screenshot default dir)
+        cwd: resolveProviderCwd(provider),
         timeoutMs: provider.timeoutMs || 60000
       }));
     }

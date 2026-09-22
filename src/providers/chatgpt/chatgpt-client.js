@@ -26,7 +26,8 @@ exports.parseRetryAfterMs = (headers = {}) => {
   return null;
 };
 
-const isRetriable = (status) => status === 429 || (status >= 500 && status < 600);
+// A 429 is a server instruction to stop sending requests, not a transient failure to amplify.
+const isRetriable = (status) => status >= 500 && status < 600;
 
 exports.withRetry = async (fn, options = {}) => {
   const maxRetries = options.maxRetries ?? DEFAULT_MAX_RETRIES;
@@ -55,8 +56,18 @@ const rawRequest = (target, token, sessionHeaders, options, parseBody) => new Pr
   }
   const req = https.request('https://chatgpt.com' + target, { method: options.method || 'GET', headers }, (res) => {
     const chunks = [];
-    res.on('data', (chunk) => chunks.push(chunk));
+    let ended = false;
+    const aborted = () => {
+      const error = new Error(`ChatGPT upstream stream aborted: ${target}`);
+      error.code = 'UPSTREAM_ABORTED';
+      reject(error);
+    };
+    res.on('data', (chunk) => {
+      if (typeof options.onChunk === 'function') options.onChunk(chunk);
+      chunks.push(chunk);
+    });
     res.on('end', () => {
+      ended = true;
       const text = Buffer.concat(chunks).toString('utf8');
       resolve({
         status: res.statusCode,
@@ -65,14 +76,26 @@ const rawRequest = (target, token, sessionHeaders, options, parseBody) => new Pr
         headers: { ...res.headers }
       });
     });
+    res.on('aborted', aborted);
+    res.on('error', reject);
+    res.on('close', () => { if (!ended) aborted(); });
   });
   req.on('error', reject);
+  if (Number.isFinite(options.idleTimeoutMs) && options.idleTimeoutMs > 0) {
+    req.setTimeout(options.idleTimeoutMs, () => {
+      const error = new Error(`ChatGPT upstream stream idle timeout: ${target}`);
+      error.code = 'UPSTREAM_IDLE_TIMEOUT';
+      req.destroy(error);
+    });
+  }
   if (payload) req.write(payload);
   req.end();
 });
 
 const retryOptionsOf = (options) => {
   if (options.retry === false) return null;
+  // Retrying a mutation can duplicate a message if the first response was lost.
+  if ((options.method || 'GET').toUpperCase() !== 'GET' && !options.retry) return null;
   const retry = options.retry && typeof options.retry === 'object' ? options.retry : {};
   return {
     maxRetries: retry.maxRetries ?? DEFAULT_MAX_RETRIES,

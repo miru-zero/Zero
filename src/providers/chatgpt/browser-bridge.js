@@ -20,6 +20,12 @@ const resolveChromePath = (env = process.env, existsSync = fs.existsSync, platfo
 exports.resolveChromePath = resolveChromePath;
 const defaultPort = 9223;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const rateLimitError = () => {
+  const error = new Error('RATE_LIMITED');
+  error.code = 'RATE_LIMITED';
+  error.status = 429;
+  return error;
+};
 
 const createCdpClient = (WebSocketImpl, url) => new Promise((resolve, reject) => {
   const socket = new WebSocketImpl(url);
@@ -188,6 +194,7 @@ exports.createRuntime = ({ fetchImpl = fetch, spawnImpl = spawn, WebSocketImpl =
     while (Date.now() < deadline) {
       const state = await runtime.getConversation({ page, conversationId });
       if (state.status === 401) { const e = new Error('AUTH_REQUIRED'); e.code = 'AUTH_REQUIRED'; throw e; }
+      if (state.status === 429) throw rateLimitError();
       if (state.status === 200 && state.current_node && state.current_node !== previousNode) return state;
       await sleepImpl(250);
     }
@@ -198,6 +205,7 @@ exports.createRuntime = ({ fetchImpl = fetch, spawnImpl = spawn, WebSocketImpl =
     while (Date.now() < deadline) {
       const state = await runtime.getConversation({ page, conversationId });
       if (state.status === 401) { const e = new Error('AUTH_REQUIRED'); e.code = 'AUTH_REQUIRED'; throw e; }
+      if (state.status === 429) throw rateLimitError();
       const finalAssistant = state.status === 200
         && state.current_node && state.current_node !== previousNode
         && state.current_role === 'assistant'
@@ -249,6 +257,15 @@ exports.send = async ({
       await runtime.hydrateSession({ page, sessionHeaders, token });
     }
     const before = await runtime.getConversation({ page, conversationId });
+    if (before.status === 429) {
+      return {
+        success: false,
+        status: 'RATE_LIMITED',
+        conversationId,
+        previousNode: null,
+        currentNode: null
+      };
+    }
     if (before.status === 401) {
       return {
         success: false,

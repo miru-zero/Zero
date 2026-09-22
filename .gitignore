@@ -41,3 +41,12 @@ temp/
 .DS_Store
 Thumbs.db
 Desktop.ini
+
+# Zero working-memory raw/debug artifacts (keep structured .md memory versioned)
+.zero_memory/**/*.txt
+
+# Generated takeover/capture artifacts
+src/providers/chatgpt/agents/conversions/
+
+# One-off local debug helper
+tools/zero/read_source_21_24.cmd

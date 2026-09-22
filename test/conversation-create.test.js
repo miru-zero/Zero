@@ -20,6 +20,89 @@ test('createConversation prepares, uses returned conduit, sends, then fetches de
   assert.equal(send.options.headers['x-conduit-token'],'ct');
 });
 
+test('createConversation mirrors core ChatGPT Web protocol context', async () => {
+  let prepareBody = null;
+  let sendBody = null;
+  const requestJson = async (target, token, headers, options = {}) => {
+    if (target.endsWith('/f/conversation/prepare')) {
+      prepareBody = options.body;
+      return { status: 200, json: {}, headers: { 'x-conduit-token': 'ct' } };
+    }
+    if (target.startsWith('/backend-api/conversations/')) {
+      return { status: 200, json: { conversation_id: 'conv-web', current_node: 'node-web', messages: [] } };
+    }
+    if (target === '/backend-api/conversation/init') return { status: 200, json: {} };
+    throw new Error('unexpected ' + target);
+  };
+  const requestText = async (target, token, headers, options = {}) => {
+    sendBody = options.body;
+    return { status: 200, text: 'data: {"conversation_id":"conv-web"}\n\n' };
+  };
+
+  await conversations.createConversation({
+    message: 'hello',
+    token: 't',
+    sessionHeaders: {},
+    requestJson,
+    requestText
+  });
+
+  for (const body of [prepareBody, sendBody]) {
+    assert.equal(typeof body.timezone, 'string');
+    assert.equal(typeof body.timezone_offset_min, 'number');
+    assert.deepEqual(body.model_response_contracts, [{
+      id: 'photo_upload_action.v1',
+      protocol_version: 1,
+      presets: ['cap:image', 'cap:file', 'placement:end']
+    }]);
+    assert.equal(body.client_contextual_info.app_name, 'chatgpt.com');
+  }
+  assert.equal(sendBody.enable_message_followups, true);
+  assert.equal(prepareBody.fork_from_shared_post, undefined);
+  assert.equal(sendBody.fork_from_shared_post, undefined);
+  assert.equal(sendBody.history_and_training_disabled, undefined);
+  assert.equal(sendBody.force_use_sse, undefined);
+  assert.equal(sendBody.force_use_search, undefined);
+  assert.equal(sendBody.force_paragen, undefined);
+  assert.equal(sendBody.is_onboarding_conversation, undefined);
+  assert.equal(sendBody.stream, undefined);
+  assert.equal(sendBody.force_parallel_switch, 'auto');
+  assert.equal(sendBody.paragen_cot_summary_display_override, 'allow');
+  assert.equal(prepareBody.local_function_names, undefined);
+  assert.equal(sendBody.local_function_names, undefined);
+  assert.equal(typeof sendBody.messages[0].create_time, 'number');
+  assert.deepEqual(sendBody.messages[0].metadata.selected_sources, []);
+  assert.deepEqual(sendBody.messages[0].metadata.serialization_metadata, { custom_symbol_offsets: [] });
+  assert.equal(sendBody.messages[0].metadata.submission_mode, 'manual_send');
+});
+
+test('createConversation can serialize explicit local function names without defaulting Work', async () => {
+  let prepareBody = null;
+  const requestJson = async (target, token, headers, options = {}) => {
+    if (target.endsWith('/f/conversation/prepare')) {
+      prepareBody = options.body;
+      return { status: 200, json: {}, headers: { 'x-conduit-token': 'ct' } };
+    }
+    if (target.startsWith('/backend-api/conversations/')) {
+      return { status: 200, json: { conversation_id: 'conv-local', current_node: 'node-local', messages: [] } };
+    }
+    if (target === '/backend-api/conversation/init') return { status: 200, json: {} };
+    throw new Error('unexpected ' + target);
+  };
+  const requestText = async () => ({ status: 200, text: 'data: {"conversation_id":"conv-local"}\n\n' });
+
+  await conversations.createConversation({
+    message: 'hello',
+    localFunctionNames: ['local.example'],
+    token: 't',
+    sessionHeaders: {},
+    requestJson,
+    requestText
+  });
+
+  assert.deepEqual(prepareBody.local_function_names, ['local.example']);
+});
+
 test('createConversation in project sends gizmo interaction mode', async () => {
   let sendBody=null;
   const requestJson=async (target, token, headers, options={}) => {
@@ -98,4 +181,64 @@ test('createConversation auto-resolves @connector without CLI preprocessing', as
   assert.deepEqual(prepareBody.system_hints, [hint]);
   assert.deepEqual(sendBody.system_hints, [hint]);
   assert.deepEqual(sendBody.messages[0].metadata.system_hints, [hint]);
+});
+
+test('createConversation forwards onChunk into conversation transport', async () => {
+  const seen = [];
+  const requestJson = async (target) => {
+    if (target.endsWith('/f/conversation/prepare')) {
+      return { status: 200, json: {}, headers: { 'x-conduit-token': 'ct' } };
+    }
+    if (target.startsWith('/backend-api/conversations/')) {
+      return { status: 200, json: { conversation_id: 'conv-stream', current_node: 'node-stream', messages: [] } };
+    }
+    throw new Error('unexpected ' + target);
+  };
+  const requestText = async (target, token, headers, options = {}) => {
+    assert.equal(typeof options.onChunk, 'function');
+    options.onChunk(Buffer.from('data: stream-part\n\n'));
+    return { status: 200, text: 'data: {"conversation_id":"conv-stream"}\n\n' };
+  };
+  await conversations.createConversation({
+    message: 'hello', token: 't', sessionHeaders: {}, requestJson, requestText,
+    onChunk: (chunk) => seen.push(chunk.toString('utf8'))
+  });
+  assert.deepEqual(seen, ['data: stream-part\n\n']);
+});
+
+
+test('createConversation sends visible user text separately from hidden system context', async () => {
+  let sendBody = null;
+  const requestJson = async (target) => {
+    if (target.endsWith('/f/conversation/prepare')) {
+      return { status: 200, json: {}, headers: { 'x-conduit-token': 'ct' } };
+    }
+    if (target.startsWith('/backend-api/conversations/')) {
+      return { status: 200, json: { conversation_id: 'conv-role', current_node: 'node-role', messages: [] } };
+    }
+    if (target === '/backend-api/conversation/init') return { status: 200, json: {} };
+    throw new Error('unexpected ' + target);
+  };
+  const requestText = async (target, token, headers, options = {}) => {
+    sendBody = options.body;
+    return { status: 200, text: 'data: {"conversation_id":"conv-role"}\n\n' };
+  };
+
+  await conversations.createConversation({
+    message: 'VISIBLE_USER_ONLY',
+    hiddenSystemMessages: ['HIDDEN_SYSTEM_ONLY', 'HIDDEN_TOOL_SCHEMA'],
+    token: 't',
+    sessionHeaders: {},
+    requestJson,
+    requestText
+  });
+
+  assert.equal(sendBody.messages[0].author.role, 'user');
+  assert.equal(sendBody.messages[0].content.parts[0], 'VISIBLE_USER_ONLY');
+  assert.equal(sendBody.messages[1].author.role, 'system');
+  assert.equal(sendBody.messages[1].content.parts[0], 'HIDDEN_SYSTEM_ONLY');
+  assert.equal(sendBody.messages[2].author.role, 'system');
+  assert.equal(sendBody.messages[2].content.parts[0], 'HIDDEN_TOOL_SCHEMA');
+  assert.equal(sendBody.messages[1].metadata.is_visually_hidden_from_conversation, true);
+  assert.equal(sendBody.messages[2].metadata.is_visually_hidden_from_conversation, true);
 });
