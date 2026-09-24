@@ -11,7 +11,6 @@ M:\\Zero_MCP\\
 │  ├─ chatgpt\\
 │  ├─ rewjava\\
 │  ├─ computeruse\\
-│  ├─ desktopcommander\\
 │  └─ devtools\\
 ├─ shared\\
 ├─ state\\

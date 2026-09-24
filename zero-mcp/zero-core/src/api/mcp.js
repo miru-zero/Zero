@@ -114,22 +114,6 @@ const DEVICES_TOOL_DEFS = [
 ];
 const TOOL_DEFS = [
   {
-    name: 'getChatGPTConversation',
-    description: 'Read one ChatGPT conversation through Zero by conversation id.',
-    inputSchema: inputSchema({
-      conversation_id: { type: 'string', description: 'ChatGPT conversation id' },
-      limit: { type: 'integer', minimum: 1, maximum: 200, description: 'Optional max message count' }
-    }, ['conversation_id'])
-  },
-  {
-    name: 'listChatGPTConversations',
-    description: 'List ChatGPT conversations through the Zero ChatGPT provider.',
-    inputSchema: inputSchema({
-      limit: { type: 'integer', minimum: 1, maximum: 100 },
-      offset: { type: 'integer', minimum: 0 }
-    })
-  },
-  {
     name: 'listZeroTools',
     description: 'List Zero providers and tools available through zero.miru.work.',
     inputSchema: inputSchema({ provider: { type: 'string' }, schemas: { type: 'boolean' } })
@@ -195,22 +179,6 @@ const callNamedTool = async (name, args, options) => {
   const commandName = commandToolName(name);
   if (commandName) {
     return callHubTool({ ...options, provider: 'command', tool: commandName, args });
-  }
-
-  if (name === 'getChatGPTConversation') {
-    return callHubTool({
-      ...options,
-      provider: 'chatgpt',
-      tool: 'conversation_get',
-      args: {
-        conversation_id: args.conversation_id,
-        ...(args.limit ? { limit: args.limit } : {})
-      }
-    });
-  }
-
-  if (name === 'listChatGPTConversations') {
-    return callHubTool({ ...options, provider: 'chatgpt', tool: 'conversations_list', args });
   }
 
   if (name === 'listZeroTools') {
