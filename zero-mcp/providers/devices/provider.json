@@ -1,0 +1,6 @@
+{
+  "name": "devices",
+  "type": "internal",
+  "description": "ZERO Device Registry tools",
+  "module": "{providerRoot}/runtime/index.js"
+}

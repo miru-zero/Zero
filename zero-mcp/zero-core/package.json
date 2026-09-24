@@ -1,0 +1,14 @@
+{
+  "name": "zero-mcp-core",
+  "version": "0.1.0",
+  "private": true,
+  "type": "commonjs",
+  "bin": {
+    "zero": "src/cli.js"
+  },
+  "scripts": {
+    "start": "node src/main.js",
+    "test": "node --test",
+    "auth:status": "node src/cli.js auth status"
+  }
+}

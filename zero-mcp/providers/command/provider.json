@@ -1,0 +1,6 @@
+{
+  "name": "command",
+  "type": "internal",
+  "description": "ZERO Command basic filesystem tools",
+  "module": "{providerRoot}/runtime/index.js"
+}
